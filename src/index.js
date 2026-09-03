@@ -663,10 +663,18 @@ function parseLearningJson(value) {
 
 function normalizeLearningGuide(raw, fallback) {
   const clean = (value, limit = 240) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
-  const list = (value, maxItems, limit = 240) => (Array.isArray(value) ? value : [])
-    .map((item) => clean(item, limit))
-    .filter(Boolean)
-    .slice(0, maxItems);
+  const list = (value, maxItems, limit = 240) => {
+    const seen = new Set();
+    return (Array.isArray(value) ? value : [])
+      .map((item) => clean(item, limit))
+      .filter((item) => {
+        const key = item.normalize('NFKC').toLocaleLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, maxItems);
+  };
   const dict = (Array.isArray(raw?.dict) ? raw.dict : []).map((entry) => ({
     pos: clean(entry?.pos, 40),
     terms: list(entry?.terms, 8, 120),

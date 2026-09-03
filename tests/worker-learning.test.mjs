@@ -23,7 +23,7 @@ const aiResponse = JSON.stringify({
     meanings: [{ gloss: '用于问候。', example: 'Hello, how are you?' }],
   }],
   examples: ['Hello, everyone. — 大家好。'],
-  synonyms: ['hi'],
+  synonyms: ['hi', 'HI', 'hi'],
 });
 let requestedModel = '';
 let requestedOptions = null;
@@ -50,6 +50,7 @@ assert.equal(result.dict[0].terms[0], '你好');
 assert.equal(result.definitions[0].meanings[0].gloss, '用于问候。');
 assert.equal(result.engine, 'cloudflare-ai');
 assert.equal(result.partial, false);
+assert.deepEqual(result.synonyms, ['hi']);
 assert.equal(requestedModel, '@cf/zai-org/glm-4.7-flash');
 assert.equal(requestedOptions.response_format.type, 'json_schema');
 assert.equal(requestedOptions.response_format.json_schema.strict, true);
