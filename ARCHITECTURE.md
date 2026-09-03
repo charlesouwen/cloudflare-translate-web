@@ -113,7 +113,7 @@ Web 的 `translateText()` 将请求发送到 `/api/translate`。Auto 模式在 W
 |:---|:---|:---|:---|
 | 麦克风 | `getUserMedia()` 选择的输入设备 | 自动双向、固定我方或固定对方 | 用户控制 |
 | 共享音频 | `getDisplayMedia()` 返回的音轨；无音轨时尝试回采输入 | 用户控制 | 首次切换默认关闭，用户可明确开启 |
-| 会议双通道 | 对方共享音频 + 我方物理麦克风 | 对方通道固定 `theirs`，麦克风固定 `mine` | 只允许我方译文自动播报 |
+| 会议双通道 | 对方共享音频 + 所选我方 `audioinput`（通常为物理麦克风） | 对方通道固定 `theirs`，我方输入固定 `mine` | 只允许我方译文自动播报 |
 
 “内容模式”独立于上述来源：
 
@@ -123,15 +123,15 @@ Web 的 `translateText()` 将请求发送到 `/api/translate`。Auto 模式在 W
 
 ### 6.2 捕获与权限
 
-麦克风通过 `getUserMedia()` 获取，并为语音场景请求回声消除、降噪、自动增益和单声道。高级约束失败时回退到浏览器默认音频配置。
+我方输入通过 `getUserMedia()` 获取，可以是浏览器列出的任意 `audioinput`；推荐选择物理麦克风。语音场景会请求回声消除、降噪、自动增益和单声道，高级约束失败时回退到浏览器默认音频配置。网页无法可靠判断一个输入是物理设备还是虚拟设备。
 
 标签页、窗口和屏幕音频通过 `getDisplayMedia()` 获取：
 
 - 浏览器必须展示自己的选择面板；页面只能给出 `systemAudio`、`windowAudio` 等提示，不能强制选择某个应用。
 - 调用必须发生在用户操作中，每次启动都要重新授权，权限不能持久复用。
 - 返回流必须实际包含可用音轨。`audio: true` 不保证所选表面有声音。
-- `restrictOwnAudio` 和 `suppressLocalAudioPlayback` 只作为兼容浏览器的附加保护，不能视为绝对回声隔离。
-- 无共享音轨时会查找 Stereo Mix、VB-CABLE、VoiceMeeter、BlackHole 等被系统暴露为 `audioinput` 的回采设备。
+- 当前增强参数请求 `restrictOwnAudio: true` 与 `suppressLocalAudioPlayback: false`。前者是兼容浏览器的尽力而为限制；后者明确保留被共享原声的本地播放，使用户仍可通过耳机听到对方。两者都不能替代正确的系统音频路由。
+- 无共享音轨时会查找 Stereo Mix、VB-CABLE、VoiceMeeter、BlackHole 等被系统暴露为 `audioinput` 的回采设备。为避免把 TTS 出站音频再次当作对方输入，自动回采可能拒绝与当前译音输出同组的设备；没有其他安全输入时应让启动失败并要求用户重新选择来源。
 
 普通网页不能把一个 `audiooutput` 扬声器直接当成输入，也不能注册新的 Windows 麦克风。精确的进程级 WASAPI 回采需要原生程序，不属于 Cloudflare Web 的能力范围。
 
@@ -147,7 +147,7 @@ Teams 标签页/系统共享音轨
   -> 屏幕显示，不发送到会议输出
 
 我方通道
-物理麦克风
+所选我方 audioinput（通常为物理麦克风）
   -> 独立底噪校准和断句
   -> 固定我的语种
   -> Whisper 最终稿
@@ -188,7 +188,8 @@ Teams 标签页/系统共享音轨
 - Teams 麦克风选择 `CABLE Output`。
 - Teams 扬声器选择物理耳机，不能选择同一条 Cable。
 - Teams Web 优先共享 Teams 所在标签页并开启标签页音频。
-- Teams 桌面版窗口音频不可靠时，改用整屏系统音频、Stereo Mix 或 VoiceMeeter。
+- 一条 VB-CABLE 不能同时承担“网页 TTS 出站到 Teams”和“Teams 远端声音回采到网页”；两个方向需要独立总线。
+- Teams 桌面版窗口音频不可靠时，改用整屏系统音频、Stereo Mix，或使用 VoiceMeeter 配置独立的远端回采与 TTS 出站总线。
 
 共享“窗口”不代表浏览器一定只返回该进程的声音；当前实现必须依据实际返回音轨运行，不能仅根据用户在选择框中看到的表面类型判断成功。
 
