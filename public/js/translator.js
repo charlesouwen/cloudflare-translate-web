@@ -122,3 +122,17 @@ async function detectLanguage(text) {
     return 'en';
   }
 }
+
+async function fetchLearningDetails(text, from, to, translation, options = {}) {
+  const response = await fetch('/api/learn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, from, to, translation }),
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `Learning API error: ${response.status}`);
+  }
+  return response.json();
+}

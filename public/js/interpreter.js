@@ -14,7 +14,7 @@ const INTERP_STT_TIMEOUT_MS = 22000;
 const INTERP_TRANSLATE_TIMEOUT_MS = 14000;
 const INTERP_MAX_FINAL_WORKERS = 2;
 const INTERP_MAX_FINAL_QUEUE = 8;
-const INTERP_MIN_VOICED_MS = 150;
+const INTERP_MIN_VOICED_MS = 320;
 const INTERP_MUSIC_WINDOW_SAMPLES = INTERP_SAMPLE_RATE * 12;
 const INTERP_MUSIC_OVERLAP_SAMPLES = Math.round(INTERP_SAMPLE_RATE * 2.5);
 const INTERP_MUSIC_INTERIM_MIN_SAMPLES = Math.round(INTERP_SAMPLE_RATE * 1.2);
@@ -123,8 +123,13 @@ function initInterpreter() {
   if (savedTheirLang && theirLang) theirLang.value = savedTheirLang;
 
   interpreterState.source = localStorage.getItem('interp_audio_source') || migrateLegacySource();
-  interpreterState.contentMode = localStorage.getItem('interp_content_mode') ||
-    (interpreterState.source === 'system' ? 'music' : 'conversation');
+  const savedContentMode = localStorage.getItem('interp_content_mode');
+  const contentModeVersion = localStorage.getItem('interp_content_mode_version');
+  interpreterState.contentMode = contentModeVersion === '2' && ['conversation', 'music'].includes(savedContentMode)
+    ? savedContentMode
+    : 'conversation';
+  localStorage.setItem('interp_content_mode', interpreterState.contentMode);
+  localStorage.setItem('interp_content_mode_version', '2');
   const savedDirection = localStorage.getItem('interp_speaker_direction');
   const directionModeVersion = localStorage.getItem('interp_direction_mode_version');
   interpreterState.direction = directionModeVersion === '2' && ['auto', 'mine', 'theirs'].includes(savedDirection)
@@ -172,8 +177,6 @@ function initInterpreter() {
       }
       interpreterState.source = button.dataset.interpSource;
       localStorage.setItem('interp_audio_source', interpreterState.source);
-      interpreterState.contentMode = interpreterState.source === 'system' ? 'music' : 'conversation';
-      localStorage.setItem('interp_content_mode', interpreterState.contentMode);
       updateInterpreterControls();
     });
   });
@@ -442,9 +445,8 @@ async function startInterpreter() {
         });
       }
     } catch (meterError) {
-      interpreterState.mode = 'timed';
-      console.warn('[同传] Web Audio 不可用，继续使用定时录音分段:', meterError);
-      startTimedRecorderFallback();
+      console.warn('[同传] Web Audio 不可用，已停止自动分段以避免静音误识别:', meterError);
+      throw new Error('AudioAnalysisUnavailable');
     }
   } catch (error) {
     console.error('[同传] 音频采集失败:', error);
@@ -673,6 +675,9 @@ function handleMusicPCMProcess(event) {
   const utterance = interpreterState.activeUtterance;
   utterance.frames.push(frame);
   utterance.sampleCount += frame.length;
+  const frameLevel = frameRms(frame);
+  utterance.peakLevel = Math.max(utterance.peakLevel, frameLevel);
+  if (frameLevel >= 0.0035) utterance.voicedMs += frame.length / INTERP_SAMPLE_RATE * 1000;
 
   const newSamples = utterance.sampleCount - utterance.overlapSamples;
   const now = performance.now();
@@ -688,7 +693,11 @@ function handleMusicPCMProcess(event) {
     const completeAudio = concatAudioFrames(utterance.frames);
     const overlap = completeAudio.slice(-INTERP_MUSIC_OVERLAP_SAMPLES);
     interpreterState.activeUtterance = null;
-    finalizeUtterance(utterance, completeAudio);
+    if (utterance.voicedMs >= INTERP_MIN_VOICED_MS && utterance.peakLevel >= 0.0035) {
+      finalizeUtterance(utterance, completeAudio);
+    } else {
+      utterance.bubble?.remove();
+    }
 
     const nextUtterance = createUtterance([overlap], false);
     nextUtterance.overlapSamples = overlap.length;
@@ -696,6 +705,13 @@ function handleMusicPCMProcess(event) {
     nextUtterance.previousTranscriptRef = utterance.transcriptRef;
     interpreterState.activeUtterance = nextUtterance;
   }
+}
+
+function frameRms(samples) {
+  if (!samples?.length) return 0;
+  let energy = 0;
+  for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
+  return Math.sqrt(energy / samples.length);
 }
 
 function downsampleMusicFrame(audioBuffer, targetRate) {
@@ -1327,7 +1343,13 @@ function buildRecognitionHistory(contentMode, theirLang) {
       item.contentMode === 'music' && languageBase(item.sl) === language,
     );
   }
-  return items.slice(-2).map((item) => item.original).join(' ').replace(/\s+/g, ' ').slice(-500);
+  return items
+    .filter((item) => !isCaptionArtifact(item.original).isArtifact)
+    .slice(-2)
+    .map((item) => item.original)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .slice(-320);
 }
 
 function startFallbackRecorder() {
@@ -1624,6 +1646,8 @@ async function recognizeUtterance(utterance, payload, isFinal) {
       'X-Audio-Mode': utterance.source,
       'X-Content-Mode': utterance.contentMode,
       'X-Chunk-Id': String(utterance.id),
+      'X-Audio-Voiced-Ms': String(Math.max(0, Math.round(utterance.voicedMs || 0))),
+      'X-Audio-Peak': String(Math.max(0, Number(utterance.peakLevel || 0)).toFixed(5)),
     };
     if (isFinal && interpreterState.asrEngine === 'fusion') {
       const alternate = [
@@ -1712,6 +1736,8 @@ function encodePCM16Wav(samples, sampleRate) {
 
 async function applyTranscriptResult(utterance, result, isFinal) {
   let text = sanitizeTranscript(result.text || '');
+  const artifact = isCaptionArtifact(text);
+  if (artifact.strong || (!isFinal && artifact.isArtifact)) text = '';
   const previousText = utterance.previousTranscriptRef?.text || utterance.previousOriginal;
   if (utterance.contentMode === 'music' && utterance.overlapSamples && previousText) {
     text = trimTranscriptOverlap(previousText, text);
@@ -1724,6 +1750,16 @@ async function applyTranscriptResult(utterance, result, isFinal) {
   );
   text = echoFiltered.text;
   if (!text) {
+    const explicitlyRejected = window.InterpreterPlaybackEcho?.shouldRejectFinalTranscript
+      ? window.InterpreterPlaybackEcho.shouldRejectFinalTranscript(result, artifact)
+      : result?.accepted === false || Boolean(result?.whisper_filtered_reason) || artifact.strong;
+    if (isFinal && explicitlyRejected) {
+      utterance.translationController?.abort();
+      utterance.translated = '';
+      utterance.original = '';
+      utterance.bubble?.remove();
+      return;
+    }
     if (echoFiltered.echoOnly) {
       if (isFinal) utterance.bubble?.remove();
       return;
@@ -1768,6 +1804,11 @@ async function applyTranscriptResult(utterance, result, isFinal) {
   } else {
     scheduleInterimTranslation(utterance, text);
   }
+}
+
+function isCaptionArtifact(text) {
+  return window.InterpreterPlaybackEcho?.classifyCaptionArtifact?.(text) ||
+    { isArtifact: false, strong: false, reason: '' };
 }
 
 function filterInterpreterPlaybackEcho(text, language, utterance, isFinal) {
@@ -2625,6 +2666,7 @@ function describeCaptureError(error) {
   if (error.message === 'NoAudioTrack' || error.message === 'AudioTrackEnded') return '浏览器未返回可用音轨';
   if (error.message === 'NoSupportedRecorder') return '当前浏览器不支持实时录音';
   if (error.message === 'NoAudioContext') return '当前浏览器不支持音频处理';
+  if (error.message === 'AudioAnalysisUnavailable') return '浏览器无法分析音频，已停止以避免静音误识别；请使用最新版 Chrome 或 Edge';
   return '无法访问音频来源';
 }
 

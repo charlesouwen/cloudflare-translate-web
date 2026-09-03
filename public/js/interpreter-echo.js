@@ -213,5 +213,47 @@
       .trim();
   }
 
-  return { normalizeSpeechText, compareText, classifyPlaybackEcho, removeReferenceSegment };
+  function normalizeCaptionArtifact(value) {
+    let text = String(value || '').toLowerCase();
+    try { text = text.normalize('NFKC'); } catch {}
+    return text.replace(/[^\p{L}\p{N}]+/gu, '').slice(0, 500);
+  }
+
+  function classifyCaptionArtifact(value) {
+    const text = normalizeCaptionArtifact(value);
+    if (!text) return { isArtifact: false, strong: false, reason: '' };
+    const fixed = [
+      '请不吝点赞订阅转发打赏支持明镜与点点栏目',
+      '请不吝点赞订阅转发打赏支持明镜与点点',
+      '字幕由amaraorg社区提供',
+      '字幕由amara社区提供',
+      '字幕由志愿者提供',
+      '字幕由志愿者制作',
+    ].some((phrase) => text.includes(phrase)) ||
+      /(?:subtitle|subtitles|caption|captions)(?:volunteer|providedby|createdby|translatedby|contributedby)/.test(text);
+    if (fixed) return { isArtifact: true, strong: true, reason: 'fixed-caption' };
+
+    const chineseHits = ['点赞', '點讚', '关注', '關注', '订阅', '訂閱', '转发', '轉發', '打赏', '打賞', '感谢观看']
+      .filter((phrase) => text.includes(phrase)).length;
+    const creatorTemplate = chineseHits >= 3 ||
+      /(?:thanksforwatching|thankyouforwatching|likeandsubscribe|pleasesubscribe|dontforgettosubscribe)/.test(text);
+    return {
+      isArtifact: creatorTemplate,
+      strong: false,
+      reason: creatorTemplate ? 'creator-boilerplate' : '',
+    };
+  }
+
+  function shouldRejectFinalTranscript(result, artifact = classifyCaptionArtifact(result?.text)) {
+    return Boolean(result?.accepted === false || result?.whisper_filtered_reason || artifact?.strong);
+  }
+
+  return {
+    normalizeSpeechText,
+    compareText,
+    classifyPlaybackEcho,
+    removeReferenceSegment,
+    classifyCaptionArtifact,
+    shouldRejectFinalTranscript,
+  };
 });

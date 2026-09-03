@@ -372,7 +372,7 @@ try {
       new Request('https://fanyi.92haohuo.cn/status?format=json'), env, {},
     );
     const payload = await responsePayload(statusResponse);
-    assert.equal(payload.version, 'translate-v28');
+    assert.equal(payload.version, 'translate-v29');
     assert.equal(payload.checks.translation.google_public_auto, true);
     assert.equal(payload.providers.google.status, 'ok');
     assert.equal(payload.providers.google.healthy, true);

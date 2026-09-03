@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="免费在线翻译服务，支持文字、图片、文档翻译和同声传译。集成高精度云端AI，带来极速翻译体验。">
   <meta name="keywords" content="翻译, 在线翻译, 拍照翻译, 图片翻译, 同声传译, 语音翻译, Google翻译替代, AI翻译, 文档翻译, Translate">
   <!-- Open Graph / 社交媒体分享优化 -->
@@ -151,7 +151,7 @@
             <button class="tool-btn" id="copyTargetBtn" data-i18n-title="copyText">📋</button>
             <span class="engine-badge" id="engineBadge" style="display:none">Google</span>
           </div>
-          <div id="targetText" class="translate-output" data-i18n="outputPlaceholder"></div>
+          <div id="targetText" class="translate-output" role="status" aria-live="polite" aria-busy="false"></div>
           <!-- 学习模式卡片 -->
           <div id="learnCard" class="learn-card" style="display:none"></div>
         </div>

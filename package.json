@@ -9,7 +9,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "test:worker": "node tests/worker-translation-race.test.mjs && node tests/worker-bing-tts.test.mjs && node tests/worker-asr-correction.test.mjs && node --test tests/bing-live-speech-quality.test.mjs && node tests/worker-bing-live-api.test.mjs"
+    "test:worker": "node tests/worker-translation-race.test.mjs && node tests/worker-bing-tts.test.mjs && node tests/worker-asr-correction.test.mjs && node tests/worker-learning.test.mjs && node --test tests/bing-live-speech-quality.test.mjs && node tests/worker-bing-live-api.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.94.0"

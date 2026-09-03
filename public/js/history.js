@@ -15,24 +15,39 @@ function getHistory() {
   } catch { return []; }
 }
 
+function writeStoredList(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    console.warn(`[history] unable to persist ${key}:`, error);
+    return false;
+  }
+}
+
 function addHistory(item) {
   /* item = { id, text, translatedText, sl, tl, engine, timestamp } */
   const history = getHistory();
   item.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   item.timestamp = Date.now();
+  const duplicateIndex = history.findIndex((entry) =>
+    entry.text === item.text && entry.sl === item.sl && entry.tl === item.tl);
+  if (duplicateIndex >= 0) history.splice(duplicateIndex, 1);
   history.unshift(item);
   if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  writeStoredList(HISTORY_KEY, history);
   return item;
 }
 
 function deleteHistory(id) {
   const history = getHistory().filter(h => h.id !== id);
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  writeStoredList(HISTORY_KEY, history);
+  writeStoredList(FAVORITES_KEY, getFavorites().filter((favoriteId) => favoriteId !== id));
 }
 
 function clearHistory() {
-  localStorage.setItem(HISTORY_KEY, '[]');
+  writeStoredList(HISTORY_KEY, []);
+  writeStoredList(FAVORITES_KEY, []);
 }
 
 function searchHistory(query) {
@@ -59,7 +74,7 @@ function toggleFavorite(id) {
   } else {
     favorites.push(id);
   }
-  localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+  writeStoredList(FAVORITES_KEY, favorites);
   return idx < 0; /* true = 已收藏 */
 }
 
@@ -81,7 +96,11 @@ function renderHistoryPanel() {
   const showFavorites = panel.dataset.showFavorites === 'true';
   const items = showFavorites ? getFavoriteItems() : getHistory();
   const searchQuery = document.getElementById('historySearch')?.value || '';
-  const filteredItems = searchQuery ? searchHistory(searchQuery) : items;
+  const normalizedQuery = searchQuery.toLowerCase();
+  const filteredItems = normalizedQuery
+    ? items.filter((item) => item.text.toLowerCase().includes(normalizedQuery) ||
+      item.translatedText.toLowerCase().includes(normalizedQuery))
+    : items;
 
   const listEl = panel.querySelector('.history-list');
   if (!listEl) return;

@@ -6,6 +6,10 @@
 let sourceLang = 'auto';
 let targetLang = 'zh-CN';
 let translateTimer = null;
+let translationController = null;
+let translationRequestId = 0;
+let learningController = null;
+let lastTranslationSnapshot = null;
 const DEBOUNCE_MS = 400;
 
 /* ---------- 初始化 ---------- */
@@ -37,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* 注册 PWA Service Worker */
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js?v=16', { updateViaCache: 'none' }).catch(() => {});
+    navigator.serviceWorker.register('/sw.js?v=29', { updateViaCache: 'none' }).catch(() => {});
   }
 });
 
@@ -51,6 +55,10 @@ function bindTranslationEvents() {
 
   sourceText.addEventListener('input', () => {
     const text = sourceText.value;
+    translationController?.abort();
+    learningController?.abort();
+    translationRequestId += 1;
+    lastTranslationSnapshot = null;
 
     /* 字符计数 */
     if (charCount) {
@@ -63,6 +71,13 @@ function bindTranslationEvents() {
     if (!text.trim()) {
       document.getElementById('targetText').textContent = '';
       document.getElementById('engineBadge').style.display = 'none';
+      const learnCard = document.getElementById('learnCard');
+      if (learnCard) {
+        learnCard.replaceChildren();
+        learnCard.style.display = 'none';
+      }
+      const detectedLabel = document.getElementById('detectedLangLabel');
+      if (detectedLabel) detectedLabel.style.display = 'none';
       return;
     }
 
@@ -90,6 +105,21 @@ function bindTranslationEvents() {
   sourceText.addEventListener('click', updateHighlightFromTextarea);
   sourceText.addEventListener('keyup', updateHighlightFromTextarea);
   sourceText.addEventListener('focus', updateHighlightFromTextarea);
+
+  const learnToggle = document.getElementById('learnModeToggle');
+  if (learnToggle) {
+    learnToggle.checked = localStorage.getItem('translate_learn_mode') === 'true';
+    learnToggle.addEventListener('change', () => {
+      try { localStorage.setItem('translate_learn_mode', String(learnToggle.checked)); } catch {}
+      if (!learnToggle.checked) {
+        learningController?.abort();
+        const learnCard = document.getElementById('learnCard');
+        if (learnCard) learnCard.style.display = 'none';
+      } else if (lastTranslationSnapshot) {
+        void loadLearningCard(lastTranslationSnapshot);
+      }
+    });
+  }
 }
 
 // ===== 双向高亮辅助函数 =====
@@ -142,11 +172,22 @@ async function doTranslate() {
 
   if (!text || !targetText) return;
 
+  const requestId = ++translationRequestId;
+  translationController?.abort();
+  learningController?.abort();
+  const controller = new AbortController();
+  translationController = controller;
+  const requestSnapshot = { text, sourceLang, targetLang };
+
   /* 显示加载状态 */
   targetText.classList.add('loading');
+  targetText.setAttribute('aria-busy', 'true');
 
   try {
-    const result = await translateText(text, sourceLang, targetLang);
+    const result = await translateText(text, sourceLang, targetLang, { signal: controller.signal });
+    if (requestId !== translationRequestId || controller.signal.aborted ||
+        sourceText.value.trim() !== requestSnapshot.text || sourceLang !== requestSnapshot.sourceLang ||
+        targetLang !== requestSnapshot.targetLang) return;
 
     // 渲染成交互式多行 DOM
     const lines = result.translatedText.split('\n');
@@ -155,6 +196,7 @@ async function doTranslate() {
       return `<div class="trans-interactive-line" data-line="${idx}">${escaped || '&nbsp;'}</div>`;
     }).join('');
     targetText.classList.remove('loading');
+    targetText.setAttribute('aria-busy', 'false');
 
     // 绑定点击事件，实现“点击译文高亮原文”
     targetText.querySelectorAll('.trans-interactive-line').forEach(el => {
@@ -168,7 +210,7 @@ async function doTranslate() {
 
     /* 显示引擎标识 */
     if (engineBadge) {
-      engineBadge.textContent = result.engine === 'google' ? 'Google' : result.engine === 'bing' ? 'Bing' : 'CF AI';
+      engineBadge.textContent = translationEngineLabel(result);
       engineBadge.className = `engine-badge engine-${result.engine}`;
       engineBadge.style.display = 'inline-block';
     }
@@ -184,25 +226,79 @@ async function doTranslate() {
     }
 
     /* 添加到历史 */
-    addHistory({
-      text: text.substring(0, 200),
-      translatedText: result.translatedText.substring(0, 200),
-      sl: result.detectedLanguage || sourceLang,
-      tl: targetLang,
-      engine: result.engine,
-    });
+    try {
+      addHistory({
+        text: text.substring(0, 200),
+        translatedText: result.translatedText.substring(0, 200),
+        sl: result.detectedLanguage || sourceLang,
+        tl: targetLang,
+        engine: result.engine,
+      });
+    } catch (storageError) {
+      console.warn('Translation history could not be saved:', storageError);
+    }
 
     /* ===== 学习模式 ===== */
-    renderLearnCard(text, result);
+    lastTranslationSnapshot = { text, result, sourceLang: requestSnapshot.sourceLang, targetLang: requestSnapshot.targetLang, requestId };
+    void loadLearningCard(lastTranslationSnapshot);
 
   } catch (e) {
+    if (e.name === 'AbortError' || requestId !== translationRequestId) return;
     targetText.textContent = __t('errorTranslation');
     targetText.classList.remove('loading');
+    targetText.setAttribute('aria-busy', 'false');
     targetText.classList.add('error');
     setTimeout(() => targetText.classList.remove('error'), 2000);
     // 学习模式出错时隐藏卡片
     const learnCard = document.getElementById('learnCard');
     if (learnCard) learnCard.style.display = 'none';
+  } finally {
+    if (translationController === controller) translationController = null;
+  }
+}
+
+function translationEngineLabel(result) {
+  const engine = String(result?.provider || result?.engine || '').toLowerCase();
+  if (engine.includes('microsoft')) return 'Microsoft';
+  if (engine.includes('google')) return 'Google';
+  if (engine.includes('bing')) return 'Bing';
+  if (engine.includes('cloudflare') || engine.includes('cf')) return 'Cloudflare AI';
+  return 'Auto';
+}
+
+async function loadLearningCard(snapshot) {
+  const learnCard = document.getElementById('learnCard');
+  const enabled = document.getElementById('learnModeToggle')?.checked;
+  if (!learnCard || !enabled || !snapshot || snapshot.text.length > 80) {
+    if (learnCard) learnCard.style.display = 'none';
+    return;
+  }
+
+  learningController?.abort();
+  const controller = new AbortController();
+  learningController = controller;
+  learnCard.className = 'learn-card is-loading';
+  learnCard.textContent = '正在整理学习内容…';
+  learnCard.style.display = 'block';
+  try {
+    const details = await fetchLearningDetails(
+      snapshot.text,
+      snapshot.result.detectedLanguage || snapshot.sourceLang,
+      snapshot.targetLang,
+      snapshot.result.translatedText,
+      { signal: controller.signal },
+    );
+    if (controller.signal.aborted || snapshot.requestId !== translationRequestId ||
+        lastTranslationSnapshot !== snapshot) return;
+    renderLearnCard(snapshot.text, { ...snapshot.result, ...details });
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    console.warn('Learning details unavailable:', error);
+    learnCard.className = 'learn-card is-empty';
+    learnCard.textContent = '学习内容暂时不可用，基础翻译不受影响。';
+    learnCard.style.display = 'block';
+  } finally {
+    if (learningController === controller) learningController = null;
   }
 }
 
@@ -214,10 +310,11 @@ function renderLearnCard(text, result) {
   if (!learnCard) return;
 
   const isLearnMode = document.getElementById('learnModeToggle')?.checked;
-  const isShortText = text.trim().length <= 50; // 单词/词组级别
+  const isShortText = text.trim().length <= 80;
 
   // 非学习模式 或 文本过长 或 无词典数据 → 隐藏卡片
-  if (!isLearnMode || !isShortText || (!result.dict?.length && !result.definitions?.length && !result.examples?.length)) {
+  if (!isLearnMode || !isShortText || (!result.dict?.length && !result.definitions?.length &&
+      !result.examples?.length && !result.synonyms?.length)) {
     learnCard.style.display = 'none';
     return;
   }
@@ -231,6 +328,7 @@ function renderLearnCard(text, result) {
   html += `<div class="learn-phonetic">
     <button class="learn-speak-btn" id="learnSpeakBtn" title="朗读发音">🔊</button>
     <span class="learn-word">${esc(inputWord)}</span>
+    ${result.phonetic ? `<span class="learn-ipa">${esc(result.phonetic)}</span>` : ''}
   </div>`;
 
   /* 2. 词性 + 释义段 */
@@ -254,7 +352,7 @@ function renderLearnCard(text, result) {
       if (def.pos) {
         html += `<span class="learn-pos-tag">${esc(def.pos)} 定义</span>`;
       }
-      def.meanings.forEach(m => {
+      (Array.isArray(def.meanings) ? def.meanings : []).forEach(m => {
         if (m.gloss) html += `<div class="learn-terms">📖 ${esc(m.gloss)}</div>`;
         if (m.example) html += `<div class="learn-example-item">💬 "${esc(m.example)}"</div>`;
       });
@@ -280,6 +378,7 @@ function renderLearnCard(text, result) {
     html += `</div>`;
   }
 
+  learnCard.className = 'learn-card';
   learnCard.innerHTML = html;
   learnCard.style.display = 'block';
 

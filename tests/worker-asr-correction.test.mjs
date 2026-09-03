@@ -32,16 +32,41 @@ async function recognize(rawText, correctedText, language, options = {}) {
     'X-Their-Lang': 'en',
     'X-ASR-Correction': '1',
     'X-Transcript-Mode': 'final',
+    'X-Audio-Mode': options.audioMode || 'microphone',
+    'X-Content-Mode': options.contentMode || 'conversation',
   };
   if (options.alternateTranscript) headers['X-Alternate-Transcript'] = encodeURIComponent(options.alternateTranscript);
   if (options.alternateLanguage) headers['X-Alternate-Language'] = options.alternateLanguage;
   const response = await worker.fetch(new Request('https://fanyi.92haohuo.cn/api/stt', {
     method: 'POST',
     headers,
-    body: new Uint8Array([82, 73, 70, 70, 1, 2, 3, 4]),
+    body: options.audio || new Uint8Array([82, 73, 70, 70, 1, 2, 3, 4]),
   }), env);
   assert.equal(response.status, 200);
   return { payload: await response.json(), calls };
+}
+
+function silentPcmWav(seconds = 2, sampleRate = 16000) {
+  const samples = seconds * sampleRate;
+  const buffer = new ArrayBuffer(44 + samples * 2);
+  const view = new DataView(buffer);
+  const text = (offset, value) => {
+    for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+  };
+  text(0, 'RIFF');
+  view.setUint32(4, 36 + samples * 2, true);
+  text(8, 'WAVE');
+  text(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, 'data');
+  view.setUint32(40, samples * 2, true);
+  return new Uint8Array(buffer);
 }
 
 const divergent = await recognize('please deploy the code', '请把代码发布到生产环境', 'en');
@@ -126,5 +151,18 @@ assert.equal(legitimateCreatorSentence.payload.whisper_filtered_reason, null);
 const noSpeechSentinel = await recognize('呃呃呃呃', '[NO_SPEECH]', 'zh');
 assert.equal(noSpeechSentinel.payload.text, '', 'an explicit correction sentinel must suppress acoustic gibberish');
 assert.equal(noSpeechSentinel.payload.whisper_filtered_reason, 'post-correction-no-speech');
+
+const silentSystemAudio = await recognize('Thank you.', 'Thank you.', 'en', {
+  audio: silentPcmWav(2),
+  audioMode: 'system',
+  contentMode: 'music',
+  whisper: {
+    transcription_info: { language: 'en', duration_after_vad: 2 },
+    segments: [{ no_speech_prob: 0.01, avg_logprob: -0.08, compression_ratio: 1.05 }],
+  },
+});
+assert.equal(silentSystemAudio.payload.text, '', 'PCM silence must override a confident model hallucination');
+assert.equal(silentSystemAudio.payload.whisper_filtered_reason, 'no-audio-signal');
+assert.equal(silentSystemAudio.payload.accepted, false);
 
 process.stdout.write('worker ASR correction tests passed\n');

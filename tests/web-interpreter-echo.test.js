@@ -1,9 +1,32 @@
 const assert = require('assert');
 const {
+  classifyCaptionArtifact,
   classifyPlaybackEcho,
   compareText,
   removeReferenceSegment,
+  shouldRejectFinalTranscript,
 } = require('../public/js/interpreter-echo');
+
+assert.strictEqual(
+  classifyCaptionArtifact('字幕由 Amara.org 社区提供').strong,
+  true,
+  'known subtitle boilerplate must be classified as a strong artifact',
+);
+assert.strictEqual(
+  shouldRejectFinalTranscript({ text: '', accepted: false, whisper_filtered_reason: 'no-audio-signal' }),
+  true,
+  'an explicitly filtered final result must not fall back to an interim transcript',
+);
+assert.strictEqual(
+  classifyCaptionArtifact('请点赞、关注、订阅本频道').isArtifact,
+  true,
+  'generic creator boilerplate must be classified before interim translation',
+);
+assert.strictEqual(
+  classifyCaptionArtifact('请点赞支持这个栏目，我们稍后继续讨论').strong,
+  false,
+  'a longer meaningful creator sentence must not be a fixed artifact',
+);
 
 const reference = {
   text: 'Hello, how are you today?',
