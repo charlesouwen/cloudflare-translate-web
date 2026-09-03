@@ -1,48 +1,72 @@
 # Cloudflare 部署指南
 
-## 前置条件
+本文用于发布和验证 `translate-v29` Web/Worker。生产版本以
+[`/api/status`](https://fanyi.411081.xyz/api/status) 返回的 `version` 为准。
 
-1. [Cloudflare 账号](https://dash.cloudflare.com/sign-up)
-2. Node.js 18 或更高版本
-3. 已将 `fanyi.411081.xyz` 和 `fanyi.92haohuo.cn` 的 DNS 托管到当前 Cloudflare 账号（自定义域名部署时需要）
+## 1. 环境与权限
 
-## Wrangler 部署
+- Node.js 18 或更高版本；建议使用当前 LTS。
+- Cloudflare 账号拥有 `translate-app` Worker、Workers AI binding 和两个自定义域名的发布权限。
+- `fanyi.411081.xyz` 与 `fanyi.92haohuo.cn` 已托管到同一 Cloudflare 账号。
+- Web 同传生产验证使用最新稳定版 Chrome 或 Edge。麦克风、共享音频与输出设备选择要求 HTTPS；`localhost` 仅用于本地开发。
+- 浏览器必须允许该站点使用麦克风。共享标签页、窗口或屏幕的权限不能预先授予，每次启动共享音频都要由测试人员在浏览器面板中重新选择。
+- 会议双通道验证需要耳机。验证译音进入 Teams 时，还需要 VB-CABLE 或 VoiceMeeter 等虚拟音频设备。
 
-在项目根目录执行：
+`wrangler.toml` 已定义 Worker 入口、`public/` 静态资源、Workers AI binding 和自定义域名。不要把 Cloudflare、Azure 或 Google 密钥写入 Git。
+
+## 2. 安装与本地验证
+
+首次检出或 `package-lock.json` 更新后，从仓库根目录执行：
 
 ```powershell
-npm install
-npx wrangler login
+npm ci
+npm test
 npx wrangler deploy --dry-run
-npx wrangler deploy
 ```
 
-`wrangler.toml` 已配置 Worker 名称、`public/` 静态资源、Workers AI binding 和自定义域名。部署后先检查：
+`npm ci` 按锁文件安装依赖；不要提交 `node_modules/`。`npm test` 必须同时通过 Web 同传和 Worker 合约测试，特别是 `/api/translate`、`/api/learn`、`/api/stt` 与 `/api/tts` 的旧调用方式。
 
-```text
-https://fanyi.92haohuo.cn/status
-https://fanyi.92haohuo.cn/status?format=json
-https://fanyi.92haohuo.cn/api/status
+需要人工查看页面时启动本地 Worker：
+
+```powershell
+npm run dev
 ```
 
-状态接口是被动的，不会因为打开页面再向三个上游发起翻译。它会显示平台是否已配置、是否进入 Auto，以及当前 Worker isolate 最近一次真实请求的成功、失败和延迟；刚启动且尚无请求时会明确显示“未验证”。
+访问 `http://localhost:8787`。Workers AI、Whisper 和部分上游能力仍取决于有效的 Cloudflare binding 与网络，不应把本地上游不可用误判成前端资源加载故障。
 
-## 可选密钥配置（不是运行前提）
+## 3. 发布前测试矩阵
 
-当前无密钥方案即可使用 Bing、Google Web RPC 和 Cloudflare AI，**不要求**配置 `MICROSOFT_TRANSLATOR_KEY` 或 `GOOGLE_TRANSLATE_API_KEY`。如果以后购买官方服务，可用以下 Secret 把相应路径升级为官方 API；密钥不要写入前端、`wrangler.toml` 或 Git：
+| 范围 | 必测场景 | 通过标准 |
+|:---|:---|:---|
+| 文字翻译 | Auto、中英互译、显式引擎、空输入和长输入 | 无重复请求；错误可读；旧字段仍兼容 |
+| 学习模式 | 开/关、单词、短语、超长文本、Workers AI 失败 | 关闭时不请求；失败不影响基础译文 |
+| 麦克风同传 | 允许、拒绝、切换设备、停止后重启 | 方向正确；停止后权限指示与音轨释放 |
+| 共享音频 | 标签页含音频、窗口/屏幕无音轨、用户取消共享 | 仅在真实音轨存在时启动；错误可恢复 |
+| 会议双通道 | 对方通道和我方通道连续/交替发言 | 双方方向固定正确；消息不串边、不重复 |
+| 幻觉过滤 | 静音、低音量、背景噪声、真实包含“点赞/关注”的句子 | 静音模板被丢弃；真实语句不被简单关键词误杀 |
+| 自动播报 | 关闭、默认输出、虚拟输出、播放期间继续收音 | 关闭时不播放；会议模式只播我方译文；译音不回灌 |
+| 设备生命周期 | 运行中拔出设备、共享被系统停止、切换标签页 | 明确提示并释放旧音轨；可以重新启动 |
+| PWA | 强制刷新、Service Worker 更新、离线打开 | 新资源版本一致；离线状态不会伪装成在线成功 |
+| 小程序兼容 | 现有请求体、可选字段缺省、既有返回字段 | 路径、必填项、字段类型和语义不变 |
+
+至少在一个 Chrome 和一个 Edge 稳定版上运行音频测试。Teams 的完整路由与会前检查见 [会议音频指南](docs/MEETING-AUDIO.md)。
+
+## 4. 可选密钥配置
+
+无密钥方案可以使用 Bing、Google Web RPC 和 Cloudflare AI，因此以下 Secret 不是启动前提。购买官方服务后可启用相应路径：
 
 ```powershell
 # Azure/Microsoft Speech Neural TTS
 npx wrangler secret put MICROSOFT_SPEECH_KEY
 
-# 可选：Azure/Microsoft Translator（配置后成为官方 Auto 主源）
+# 可选：Azure/Microsoft Translator
 npx wrangler secret put MICROSOFT_TRANSLATOR_KEY
 
-# 可选：Google Cloud Translation v2（配置后替换无密钥 Google Web RPC）
+# 可选：Google Cloud Translation v2
 npx wrangler secret put GOOGLE_TRANSLATE_API_KEY
 ```
 
-Region 和 endpoint 可以在 Cloudflare Dashboard 的 Worker Variables 中设置，或写入本地未提交的 Wrangler 配置：
+Region 与 endpoint 可在 Cloudflare Dashboard 的 Worker Variables 中配置：
 
 ```text
 MICROSOFT_SPEECH_REGION=eastasia
@@ -51,59 +75,102 @@ MICROSOFT_TRANSLATOR_REGION=<resource-region>
 MICROSOFT_TRANSLATOR_ENDPOINT=https://api.cognitive.microsofttranslator.com
 ```
 
-兼容别名也受支持：`AZURE_SPEECH_KEY`、`AZURE_SPEECH_REGION`、`AZURE_SPEECH_ENDPOINT`、`AZURE_TRANSLATOR_KEY`、`AZURE_TRANSLATOR_REGION`、`AZURE_TRANSLATOR_ENDPOINT`。
+兼容别名包括 `AZURE_SPEECH_*` 与 `AZURE_TRANSLATOR_*`。无密钥 Bing/Google 路径使用未公开网页协议，可能受限流或协议变化影响，不具备官方 SLA。正式配置付费 TTS 前还应评估鉴权和限流，避免公开 `/api/tts` 消耗额度。
 
-### Azure Speech 免费额度和申请
+## 5. 生产发布
 
-Azure Speech 通常提供 F0 免费层（具体区域、价格和政策以 [官方定价页](https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/) 为准）：
-
-| 能力 | F0 常见额度 |
-|---|---|
-| Neural Text to Speech | 每月约 50 万字符 |
-| Speech to Text / Real-time Transcription | 每月约 5 小时 |
-| Speech Translation | 每月约 5 小时 |
-
-申请流程：Azure Portal → 创建订阅 → 创建 `Speech Services` 资源 → 价格层选择 `F0 (Free)` → 在“密钥和终结点”复制 Key 与 Region → 用上面的 `wrangler secret put` 写入 Worker。Azure 账号可能要求绑定付款方式做身份验证；超出额度或选择 S0 等付费层会产生费用。当前 `/api/tts` 是公开代理，正式放入密钥前应增加鉴权和限流，防止他人消耗额度。
-
-### 翻译 Auto 调度
-
-- Web 客户端的 Auto 只向 Worker 发一个请求，不在客户端并发三个平台。
-- Worker 有 `MICROSOFT_TRANSLATOR_KEY` 时以官方 Microsoft Translator 为主源；否则以 Bing Edge 为尽力而为的快速主源。
-- 主源 300ms 内未完成时启动 Google：配置了可选 `GOOGLE_TRANSLATE_API_KEY` 时调用官方 Google Cloud，否则调用无密钥 Google Web RPC；再过 300ms 启动 Cloudflare AI。任一上游失败会立即启动下一层，Auto 总截止约 2.5 秒。
-- 成功译文在单个 Worker isolate 内缓存 5 分钟；相同文本、语种、语气和路由的并发请求会合并成一次上游调用。
-- 旧 `translate_a/single` GTX 因持续 `429` 已移除。无密钥 Google 改用现代 `batchexecute` / `MkEWBc` Web RPC 并进入 Auto；Auto 单次最多等待 2 秒，显式 Google 和 `/api/detect` 最多等待 4 秒，失败后熔断 60 秒。
-- Google Web RPC 是未公开网页协议，状态页的“可用”表示最近被动观测正常且可参加 Auto，不代表官方 SLA。生产稳定性依赖 Bing/Google/Cloudflare 多源组合。
-
-### Bing / Microsoft Translator 说明
-
-- `provider=bing` 固定使用按 [plainheart/bing-translate-api](https://github.com/plainheart/bing-translate-api) 移植的 Bing 网页协议，不会因为配置了任何 Azure/Microsoft 密钥而改走官方 API。
-- Worker 优先使用 plainheart 当前方案对应的 Edge 免费翻译端点；不可用时才动态请求 `bing.com/translator`，解析短期 `IG`、`IID`、token/key 并调用网页协议。代码不会固化或向前端暴露 token、Cookie。
-- 该网页接口属于未公开的反滥用接口，可能返回 401/403/429 或验证码。显式 Bing 在 401/429 时只刷新会话并重试一次；未配置官方 Microsoft 凭据时，Auto 只把无需网页会话的 Bing Edge 端点作为快速主源。
-- 配置 `MICROSOFT_TRANSLATOR_KEY` 后，Auto 会优先使用官方 Azure Translator；显式 `provider=bing` 仍固定调用 Bing 网页/Edge 实现，不会被密钥静默改义。
-- 上游 npm 包依赖 Node.js `got`，不能原样打包到 Cloudflare Worker；本项目使用原生 `fetch` 重实现其协议逻辑。
-
-### Bing 网页语音说明
-
-`GET /api/tts?provider=bing&q=...&tl=...` 会尝试 Bing Translator 的匿名网页朗读，失败后自动降级到已配置的 Microsoft Speech，再降级到 Google TTS。该网页接口未公开且可能随时限流或变更；Bing 页面中的“非正式”控制翻译措辞，不是音色选择，匿名朗读也不提供可稳定锁定的女声 Voice ID。
-
-## 本地开发
+确认当前分支、提交和工作树后执行：
 
 ```powershell
-npm run dev
+git status --short --branch
+git log -1 --oneline
+npm ci
+npm test
+npx wrangler deploy --dry-run
+npx wrangler deploy
 ```
 
-访问 `http://localhost:8787`。Cloudflare AI、Whisper 和 Nova 仍需要有效的 AI binding/网络。Silero VAD、ONNX Runtime 和前端脚本均在 `public/` 中，会随 Wrangler 一起部署。
+保留 `wrangler deploy` 输出的 Version ID。不要仅凭命令退出码宣布发布完成，后续必须执行线上验证。
 
-## 常见问题
+## 6. 发布后验证
 
-**翻译请求返回 403/429？**
+先检查两个域名的版本与状态：
 
-旧 GTX 的 `429` 不再代表当前 Google provider。未配置官方密钥时，Auto 使用 Bing Edge 主源、Google Web RPC 对冲和 Cloudflare AI 兜底；若 Google Web RPC 失败，会立即推进 Cloudflare 并将 Google 熔断 60 秒。密钥不是必需项，但只有购买官方 Microsoft/Google 服务才能获得相应厂商的正式 SLA。
+```powershell
+Invoke-RestMethod https://fanyi.411081.xyz/api/status
+Invoke-RestMethod https://fanyi.92haohuo.cn/api/status
+npx wrangler deployments list
+```
 
-**同声传译没有音频？**
+两端均应返回 `translate-v29`，且部署列表顶部的 Version ID 应与本次发布一致。状态页中的上游健康信息是当前 Worker isolate 的被动观测；刚启动且尚无真实请求时显示“未验证”是正常状态。
 
-麦克风模式需要浏览器权限；标签页模式必须在共享弹窗勾选“共享音频”。Firefox 对标签页共享音频支持有限，Edge/Chromium 通常更完整。浏览器 VAD 不可用时会回退到 MediaRecorder，但仍需要 Web Audio、MediaRecorder 和 WebAssembly。
+随后执行最小 API 冒烟测试：
 
-**如何更新线上版本？**
+```powershell
+$translateBody = @{ text = '部署验证'; sl = 'zh-CN'; tl = 'en'; provider = 'auto' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri https://fanyi.411081.xyz/api/translate -ContentType 'application/json' -Body $translateBody
 
-修改代码后在根目录重新执行 `npx wrangler deploy`，再刷新 `/status?format=json` 确认版本号。
+$learnBody = @{ text = 'reliable'; from = 'en'; to = 'zh-CN'; translation = '可靠的' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri https://fanyi.411081.xyz/api/learn -ContentType 'application/json' -Body $learnBody
+```
+
+再用真实浏览器完成以下人工验证：
+
+1. 打开首页，确认文字翻译、学习卡片、历史记录和设置可用。
+2. 允许麦克风，分别说中文与目标语言，确认最终稿方向、翻译和停止后的资源释放。
+3. 共享一个正在播放人声的浏览器标签页，并在共享面板中勾选音频；确认没有音轨时页面不会伪装成已启动。
+4. 静音 30 秒并播放纯背景噪声，确认不会生成点赞、关注、订阅或固定字幕模板。
+5. 按 [会议音频指南](docs/MEETING-AUDIO.md) 建立 Teams Web 双通道路由，验证对方声音只显示给我、我的中文经翻译与 TTS 后进入 Teams 麦克风。
+6. 关闭自动播报，确认不产生音频；重新开启后确认只有我方译文被送到会议输出，而且 TTS 不会再次被识别。
+
+测试期间可另开终端查看 Worker 日志：
+
+```powershell
+npm run tail
+```
+
+## 7. 回滚
+
+先列出可回滚版本，核对时间、Version ID 与提交记录：
+
+```powershell
+npx wrangler deployments list
+```
+
+确认目标后执行 Cloudflare 版本回滚：
+
+```powershell
+npx wrangler rollback <VERSION_ID> --message "rollback: v29 production regression" --yes
+```
+
+回滚后重新检查两个域名的 `/api/status`、核心翻译 API 和首页静态资源。Cloudflare 回滚恢复 Worker 版本，但不会自动修改 Git 分支；应另建修复提交保留历史，不要重写已共享的提交。
+
+如果 Wrangler 无法回滚到目标版本，可从已验证的 Git 提交创建临时回滚分支，执行完整测试与 dry-run 后重新部署：
+
+```powershell
+git switch -c rollback/<date> <KNOWN_GOOD_COMMIT>
+npm ci
+npm test
+npx wrangler deploy --dry-run
+npx wrangler deploy
+```
+
+不要在含未提交修改的工作树中切换提交。需要保留现场时，先使用新的 worktree 或新的干净检出目录。
+
+## 8. 常见发布故障
+
+**共享音频没有声音**
+
+确认使用 Chrome/Edge，且在共享面板选择了支持音频的表面并勾选“共享音频”。`audio: true` 只是请求，不保证浏览器返回音轨。Teams 桌面窗口无音轨时改用整屏系统音频或虚拟回采设备。
+
+**译音进入识别形成循环**
+
+Teams 扬声器必须输出到物理耳机，Teams 麦克风才选择 `CABLE Output`；网页译音选择 `CABLE Input`。不要把会议播放和译音输出都接到同一条 Cable。
+
+**翻译返回 403/429**
+
+显式无密钥 Bing/Google 使用网页协议，可能受反滥用限制。Auto 会按配置对冲和降级；只有购买并配置官方服务才能获得对应厂商 SLA。
+
+**部署后仍看到旧界面**
+
+先检查 `/api/status` 和 `wrangler deployments list`。若 Worker 已更新但页面仍旧，检查 Service Worker/浏览器缓存并强制刷新，同时确认 `public/sw.js` 的缓存版本已随发布调整。
