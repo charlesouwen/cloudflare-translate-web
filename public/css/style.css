@@ -721,6 +721,7 @@ a{color:var(--primary);text-decoration:none}
 
 /* ===== 学习模式 Toggle ===== */
 .learn-mode-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -736,7 +737,14 @@ a{color:var(--primary);text-decoration:none}
   background: var(--primary-light);
 }
 .learn-mode-toggle input[type="checkbox"] {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.learn-mode-toggle:has(input:focus-visible) {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
 }
 .learn-mode-label {
   color: var(--text-secondary);
@@ -751,14 +759,17 @@ a{color:var(--primary);text-decoration:none}
 .learn-card {
   margin-top: 12px;
   padding: 16px 20px;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, #e8f0fe 0%, #f0e8fe 50%, #fee8f0 100%);
-  border: 1px solid var(--border-light);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: var(--shadow);
   animation: learnCardIn 0.35s ease;
 }
 [data-theme="dark"] .learn-card {
-  background: linear-gradient(135deg, #1a2744 0%, #261a44 50%, #441a2a 100%);
+  background: var(--bg-card);
   border-color: var(--border);
+  border-left-color: var(--primary);
 }
 @keyframes learnCardIn {
   from { opacity: 0; transform: translateY(8px); }
@@ -892,19 +903,9 @@ a{color:var(--primary);text-decoration:none}
   border-color: rgba(255, 183, 77, 0.25) !important;
 }
 
-/* 完美锁死大屏幕溢出：当同传选项卡激活时，绝对禁止外层 body 及大卡片溢出导致的页面级长距离下滑留白 */
+/* The page remains scrollable so short viewports can always reach live controls. */
 .translate-main:has(#panel-interpreter.active) {
-  max-height: calc(100vh - var(--header-h) - 30px);
-  overflow: hidden;
   padding-bottom: 0 !important;
-}  
-body:has(#panel-interpreter.active) {
-  overflow: hidden !important;
-}
-@media(max-width:768px) {
-  .translate-main:has(#panel-interpreter.active) {
-    max-height: calc(100vh - var(--header-h) - var(--bottom-tab-h) - 16px);
-  }
 }
 
 /* ===== Simultaneous Interpreter v5 ===== */
@@ -1004,7 +1005,8 @@ body:has(#panel-interpreter.active) {
   gap: 4px;
 }
 
-.interp-voice-control {
+.interp-voice-control,
+.interp-device-control {
   display: grid;
   min-width: 150px;
   max-width: min(230px, 100%);
@@ -1012,7 +1014,8 @@ body:has(#panel-interpreter.active) {
   align-self: end;
 }
 
-.interp-voice-select {
+.interp-voice-select,
+.interp-device-select {
   width: 100%;
   min-width: 0;
   height: 32px;
@@ -1022,6 +1025,20 @@ body:has(#panel-interpreter.active) {
   background: var(--bg);
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.interp-device-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.interp-device-picker .interp-icon-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 16px;
 }
 
 .interp-segmented {
@@ -1369,8 +1386,22 @@ body:has(#panel-interpreter.active) {
     border: 0;
     border-radius: 0;
   }
-  .interp-toolbar { padding: 10px 12px 9px; }
-  .interp-language-pair { grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr); gap: 7px; }
+  .interp-toolbar {
+    max-height: min(46dvh, 320px);
+    padding: 10px 12px 9px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+  .interp-language-pair {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
+    gap: 7px;
+    padding-bottom: 9px;
+    background: var(--bg-card);
+  }
   .interp-option-row { justify-content: flex-start; gap: 8px 12px; }
   .interp-messages-view { padding: 14px 12px; }
   .interp-msg-bubble { max-width: 88%; }
@@ -1385,6 +1416,12 @@ body:has(#panel-interpreter.active) {
   .interp-icon-btn { width: 34px; height: 34px; }
   .interp-option-row { display: grid; grid-template-columns: 1fr 1fr; }
   .interp-option-group { min-width: 0; }
+  .interp-option-group:has([data-interp-source]),
+  .interp-option-group:has([data-interp-direction]),
+  .interp-option-group:has([data-interp-tone]),
+  .interp-option-group:has([data-interp-asr]) { grid-column: 1 / -1; }
+  .interp-voice-control,
+  .interp-device-control { width: 100%; min-width: 0; max-width: none; }
   .interp-segmented { width: 100%; }
   .interp-segmented button { min-width: 0; flex: 1; padding: 0 4px; font-size: 11px; }
   .interp-check-control { min-height: 24px; }
@@ -1394,11 +1431,39 @@ body:has(#panel-interpreter.active) {
   .interp-mic-btn { width: 100%; height: 42px; }
 }
 
-/* Very narrow phones cannot fit three segmented controls side by side.
-   Keep labels readable and let the toolbar grow vertically instead of
-   clipping or wrapping text inside the fixed-height controls. */
 @media(max-width:360px) {
-  .interp-option-row { grid-template-columns: 1fr; }
-  .interp-option-group { width: 100%; }
-  .interp-segmented button { font-size: 12px; padding-left: 10px; padding-right: 10px; }
+  .interp-option-row { column-gap: 8px; }
+  .interp-segmented button { padding-right: 3px; padding-left: 3px; }
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.interp-mic-btn:focus-visible {
+  outline-color: #fbbc04;
+  outline-offset: 3px;
+}
+
+@media(pointer:coarse) {
+  .tab-btn,
+  .bottom-tab-btn { min-height: 48px; }
+  .learn-mode-toggle { min-height: 44px; }
+  .learn-speak-btn { width: 44px; height: 44px; }
+  .interp-lang-select,
+  .interp-voice-select,
+  .interp-device-select,
+  .interp-segmented { height: 44px; }
+  .interp-icon-btn { width: 44px; height: 44px; }
+  .interp-device-picker { grid-template-columns: minmax(0, 1fr) 44px; }
+  .interp-device-picker .interp-icon-btn { width: 44px; height: 44px; }
+  .interp-check-control { min-height: 44px; }
+  .interp-check-control input { width: 20px; height: 20px; }
+  .interp-play-btn { width: 44px; height: 44px; flex-basis: 44px; }
 }

@@ -5,32 +5,97 @@
 
 const TABS = ['text', 'images', 'documents', 'camera', 'interpreter'];
 let currentTab = 'text';
+let tabsInitialized = false;
 
 function initTabs() {
-  const tabBtns = document.querySelectorAll('.tab-btn');
-  const tabPanels = document.querySelectorAll('.tab-panel');
+  if (tabsInitialized) {
+    switchTab(getTabFromLocation(), { syncUrl: false });
+    return;
+  }
+  tabsInitialized = true;
 
-  tabBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      switchTab(btn.dataset.tab);
-    });
+  document.querySelectorAll('.tabs-inner, .bottom-tabs').forEach((tabList) => {
+    tabList.setAttribute('role', 'tablist');
+    if (!tabList.hasAttribute('aria-label')) {
+      tabList.setAttribute('aria-label', tabList.classList.contains('bottom-tabs') ? '移动端翻译模式' : '翻译模式');
+    }
   });
 
-  /* 移动端底部 Tab 栏 */
-  const bottomTabs = document.querySelectorAll('.bottom-tab-btn');
-  bottomTabs.forEach(btn => {
+  const tabButtons = document.querySelectorAll('.tab-btn, .bottom-tab-btn');
+  tabButtons.forEach((btn) => {
+    const tab = btn.dataset.tab;
+    const surface = btn.classList.contains('bottom-tab-btn') ? 'mobile' : 'desktop';
+    if (!btn.id) btn.id = `tab-${surface}-${tab}`;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-controls', `panel-${tab}`);
     btn.addEventListener('click', () => {
-      switchTab(btn.dataset.tab);
+      switchTab(tab);
     });
+    btn.addEventListener('keydown', handleTabKeydown);
   });
+
+  document.querySelectorAll('.tab-panel').forEach((panel) => {
+    const tab = panel.id.replace(/^panel-/, '');
+    const labelledBy = document.querySelector(`.tab-btn[data-tab="${tab}"]`) ||
+      document.querySelector(`.bottom-tab-btn[data-tab="${tab}"]`);
+    panel.setAttribute('role', 'tabpanel');
+    if (labelledBy) panel.setAttribute('aria-labelledby', labelledBy.id);
+  });
+
+  window.addEventListener('popstate', () => {
+    switchTab(getTabFromLocation(), { syncUrl: false });
+  });
+
+  switchTab(getTabFromLocation(), { syncUrl: false });
 }
 
-function switchTab(tab) {
-  if (!TABS.includes(tab)) return;
+function getTabFromLocation() {
+  const requestedTab = new URL(window.location.href).searchParams.get('tab');
+  return TABS.includes(requestedTab) ? requestedTab : 'text';
+}
+
+function syncTabToUrl(tab, replace) {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('tab') === tab) return;
+
+  url.searchParams.set('tab', tab);
+  const previousState = history.state && typeof history.state === 'object' ? history.state : {};
+  const nextState = { ...previousState, tab };
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  history[replace ? 'replaceState' : 'pushState'](nextState, '', nextUrl);
+}
+
+function handleTabKeydown(event) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+
+  const tabList = event.currentTarget.closest('.tabs-inner, .bottom-tabs');
+  if (!tabList) return;
+
+  const availableButtons = Array.from(tabList.querySelectorAll('[data-tab]'))
+    .filter((button) => !button.disabled);
+  const visibleButtons = availableButtons.filter((button) => button.getClientRects().length > 0);
+  const buttons = visibleButtons.length ? visibleButtons : availableButtons;
+  const currentIndex = buttons.indexOf(event.currentTarget);
+  if (currentIndex < 0 || buttons.length < 2) return;
+
+  let nextIndex;
+  if (event.key === 'Home') nextIndex = 0;
+  else if (event.key === 'End') nextIndex = buttons.length - 1;
+  else if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % buttons.length;
+  else nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+
+  event.preventDefault();
+  buttons[nextIndex].focus();
+  switchTab(buttons[nextIndex].dataset.tab);
+}
+
+function switchTab(tab, { syncUrl = true, replace = false } = {}) {
+  if (!TABS.includes(tab)) return false;
+  const previousTab = currentTab;
   currentTab = tab;
 
   /* 切换标签页时，100% 强制回收硬件资源，保护用户隐私并节约手机电量 */
-  if (tab !== 'camera') {
+  if (tab !== 'camera' && previousTab !== tab) {
     if (typeof stopCamera === 'function') {
       stopCamera();
     }
@@ -38,7 +103,7 @@ function switchTab(tab) {
       resetCameraUI();
     }
   }
-  if (tab !== 'interpreter') {
+  if (tab !== 'interpreter' && previousTab === 'interpreter') {
     if (typeof window.stopInterpreter === 'function') {
       window.stopInterpreter();
     }
@@ -46,17 +111,25 @@ function switchTab(tab) {
 
   /* 更新顶部标签 */
   document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
+    const isActive = btn.dataset.tab === tab;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', String(isActive));
+    btn.tabIndex = isActive ? 0 : -1;
   });
 
   /* 更新底部标签（移动端） */
   document.querySelectorAll('.bottom-tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
+    const isActive = btn.dataset.tab === tab;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', String(isActive));
+    btn.tabIndex = isActive ? 0 : -1;
   });
 
   /* 切换面板 */
   document.querySelectorAll('.tab-panel').forEach(panel => {
-    panel.classList.toggle('active', panel.id === `panel-${tab}`);
+    const isActive = panel.id === `panel-${tab}`;
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
   });
 
   /* 同传模式特殊处理 */
@@ -86,7 +159,8 @@ function switchTab(tab) {
     }
   }
 
-
+  if (syncUrl) syncTabToUrl(tab, replace);
+  return true;
 }
 
 /* ---------- 图片上传处理 ---------- */
