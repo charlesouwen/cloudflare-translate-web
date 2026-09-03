@@ -1988,7 +1988,9 @@ async function fetchWithTranslationTimeout(input, init, timeoutMs, label, extern
   let timedOut = false;
   const cancellation = externalSignal ? new Promise((resolve, reject) => {
     const cancel = () => {
-      controller.abort(externalSignal.reason || 'cancelled');
+      // Workerd can surface a custom fetch abort reason as an uncaught error
+      // after Promise.race has already handled the cancelled provider.
+      controller.abort();
       const error = new Error(`${label} cancelled`);
       error.translationCancelled = externalSignal.reason === 'hedge-won';
       reject(error);
@@ -2002,7 +2004,7 @@ async function fetchWithTranslationTimeout(input, init, timeoutMs, label, extern
   const deadline = new Promise((resolve, reject) => {
     timeout = setTimeout(() => {
       timedOut = true;
-      controller.abort('timeout');
+      controller.abort();
       reject(new Error(`${label} timed out`));
     }, timeoutMs);
   });
