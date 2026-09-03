@@ -164,5 +164,7 @@ const silentSystemAudio = await recognize('Thank you.', 'Thank you.', 'en', {
 assert.equal(silentSystemAudio.payload.text, '', 'PCM silence must override a confident model hallucination');
 assert.equal(silentSystemAudio.payload.whisper_filtered_reason, 'no-audio-signal');
 assert.equal(silentSystemAudio.payload.accepted, false);
+assert.deepEqual(silentSystemAudio.calls, [],
+  'PCM silence must short-circuit before Whisper or correction inference');
 
 process.stdout.write('worker ASR correction tests passed\n');
