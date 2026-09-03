@@ -51,9 +51,11 @@ assert.equal(result.definitions[0].meanings[0].gloss, '用于问候。');
 assert.equal(result.engine, 'cloudflare-ai');
 assert.equal(result.partial, false);
 assert.equal(requestedModel, '@cf/zai-org/glm-4.7-flash');
-assert.deepEqual(requestedOptions.response_format, { type: 'json_object' });
+assert.equal(requestedOptions.response_format.type, 'json_schema');
+assert.equal(requestedOptions.response_format.json_schema.strict, true);
+assert.equal(requestedOptions.response_format.json_schema.schema.properties.dict.maxItems, 1);
 assert.deepEqual(requestedOptions.chat_template_kwargs, { enable_thinking: false });
-assert.equal(requestedOptions.max_completion_tokens, 320);
+assert.equal(requestedOptions.max_completion_tokens, 420);
 
 const choicesResponse = await worker.fetch(request({
   text: 'world',
