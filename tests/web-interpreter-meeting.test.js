@@ -93,6 +93,7 @@ function createHarness() {
       beginInterpreterCaptureSuppression,
       buildRecognitionHistory,
       commitUtterance,
+      captureLoopbackStream,
       createUtterance,
       endInterpreterCaptureSuppression,
       finishFallbackUtterance,
@@ -101,11 +102,13 @@ function createHarness() {
       handleVADSpeechStart,
       monitorFallbackSpeech,
       shouldSuppressInterpreterCapture,
+      stopInterpreterTTS,
       translateInterpreterText,
       stubDownsample: (stub) => { downsampleMusicFrame = stub; },
       stubFetch: (stub) => { globalThis.fetch = stub; },
       stubFinalize: (stub) => { finalizeUtterance = stub; },
       stubInterimRecognition: (stub) => { queueInterimRecognition = stub; },
+      stubMediaDevices: (stub) => { navigator.mediaDevices = stub; },
       stubTTS: (stub) => { playInterpreterTTS = stub; },
       stubTranslate: (stub) => { translateUtterance = stub; },
       setHistory: (items) => { interpreterHistory = items; },
@@ -345,6 +348,88 @@ test('TTS playback and its cooldown suppress both capture lanes', () => {
   assert.equal(api.shouldSuppressInterpreterCapture(), true, 'capture must remain muted during cooldown');
   advanceTime(701);
   assert.equal(api.shouldSuppressInterpreterCapture(), false);
+});
+
+test('adjacent or interrupted TTS cannot clear the playback cooldown early', () => {
+  const { api, advanceTime } = createHarness();
+  Object.assign(api.state, {
+    captureMethod: 'microphone',
+    playbackActive: true,
+    playbackGuardUntil: Number.POSITIVE_INFINITY,
+  });
+  api.playback.finish = () => api.endInterpreterCaptureSuppression(false);
+
+  api.stopInterpreterTTS({ keepQueue: true, increment: false });
+  const guardUntil = api.state.playbackGuardUntil;
+  assert.equal(api.state.playbackActive, false);
+  assert.equal(guardUntil, 1700, 'interrupted playback must retain the normal echo cooldown');
+
+  advanceTime(100);
+  api.stopInterpreterTTS({ keepQueue: true, increment: false });
+  assert.equal(
+    api.state.playbackGuardUntil,
+    guardUntil,
+    'initializing the next queued TTS item must not reset the previous cooldown',
+  );
+
+  advanceTime(599);
+  assert.equal(api.shouldSuppressInterpreterCapture(), true);
+  advanceTime(2);
+  assert.equal(api.shouldSuppressInterpreterCapture(), false);
+});
+
+test('meeting loopback cannot reuse the selected translated-audio cable', async () => {
+  const { api } = createHarness();
+  const selectedInputs = [];
+  const devices = [
+    {
+      kind: 'audioinput',
+      deviceId: 'tts-return',
+      groupId: 'translated-cable',
+      label: 'CABLE Output (VB-Audio Virtual Cable)',
+    },
+    {
+      kind: 'audioinput',
+      deviceId: 'remote-loopback',
+      groupId: 'sound-card',
+      label: 'Stereo Mix (Realtek Audio)',
+    },
+    {
+      kind: 'audiooutput',
+      deviceId: 'translated-output',
+      groupId: 'translated-cable',
+      label: 'CABLE Input (VB-Audio Virtual Cable)',
+    },
+  ];
+  api.stubMediaDevices({
+    enumerateDevices: async () => devices,
+    getUserMedia: async ({ audio }) => {
+      selectedInputs.push(audio.deviceId.exact);
+      return { getAudioTracks: () => [{}], getTracks: () => [] };
+    },
+  });
+  Object.assign(api.state, {
+    outputDeviceId: 'translated-output',
+    source: 'meeting',
+  });
+
+  const stream = await api.captureLoopbackStream();
+  assert.ok(stream);
+  assert.deepEqual(selectedInputs, ['remote-loopback']);
+  assert.equal(api.state.loopbackConflict, false);
+
+  selectedInputs.length = 0;
+  api.stubMediaDevices({
+    enumerateDevices: async () => devices.filter((device) => device.deviceId !== 'remote-loopback'),
+    getUserMedia: async ({ audio }) => {
+      selectedInputs.push(audio.deviceId.exact);
+      return { getAudioTracks: () => [{}], getTracks: () => [] };
+    },
+  });
+  const rejected = await api.captureLoopbackStream();
+  assert.equal(rejected, null);
+  assert.deepEqual(selectedInputs, []);
+  assert.equal(api.state.loopbackConflict, true);
 });
 
 test('system music PCM silence is discarded instead of finalized for recognition', () => {

@@ -104,6 +104,7 @@ const interpreterState = {
   timedChunkTimer: null,
   playbackActive: false,
   playbackGuardUntil: 0,
+  loopbackConflict: false,
 };
 
 const interpreterPlayback = {
@@ -570,7 +571,7 @@ async function captureInterpreterStream(source) {
         loopbackStream.getAudioTracks()[0]?.addEventListener('ended', () => void window.stopInterpreter(), { once: true });
         return loopbackStream;
       }
-      const error = new Error('NoSystemAudio');
+      const error = new Error(interpreterState.loopbackConflict ? 'LoopbackOutputConflict' : 'NoSystemAudio');
       error.displaySurface = displaySurface;
       error.loopbackChecked = true;
       throw error;
@@ -612,6 +613,7 @@ async function captureInterpreterStream(source) {
 }
 
 async function captureLoopbackStream() {
+  interpreterState.loopbackConflict = false;
   if (typeof navigator.mediaDevices.enumerateDevices !== 'function' ||
       typeof navigator.mediaDevices.getUserMedia !== 'function') return null;
 
@@ -630,9 +632,17 @@ async function captureLoopbackStream() {
     }
   }
 
-  const loopbackDevice = devices.find((device) =>
+  const loopbackDevices = devices.filter((device) =>
     device.kind === 'audioinput' && INTERP_LOOPBACK_DEVICE_RE.test(device.label || ''),
   );
+  const selectedOutput = interpreterState.outputDeviceId
+    ? devices.find((device) => device.kind === 'audiooutput' && device.deviceId === interpreterState.outputDeviceId)
+    : null;
+  const safeLoopbackDevices = interpreterState.source === 'meeting'
+    ? loopbackDevices.filter((device) => !isMatchingVirtualAudioRoute(device, selectedOutput))
+    : loopbackDevices;
+  interpreterState.loopbackConflict = loopbackDevices.length > 0 && safeLoopbackDevices.length === 0;
+  const loopbackDevice = safeLoopbackDevices[0];
   if (!loopbackDevice) return null;
 
   try {
@@ -652,6 +662,20 @@ async function captureLoopbackStream() {
     console.warn('[同传] 扬声器回采设备启动失败:', error);
     return null;
   }
+}
+
+function isMatchingVirtualAudioRoute(inputDevice, outputDevice) {
+  if (!inputDevice || !outputDevice) return false;
+  if (inputDevice.groupId && outputDevice.groupId && inputDevice.groupId === outputDevice.groupId) return true;
+
+  const inputLabel = String(inputDevice.label || '').toLowerCase();
+  const outputLabel = String(outputDevice.label || '').toLowerCase();
+  if (!/\bcable output\b/.test(inputLabel) || !/\bcable input\b/.test(outputLabel)) return false;
+  const normalizeCableLabel = (label) => label
+    .replace(/\b(?:input|output|playback|recording)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  return normalizeCableLabel(inputLabel) === normalizeCableLabel(outputLabel);
 }
 
 function requestMediaStream(factory, timeoutMs) {
@@ -2939,7 +2963,8 @@ function stopInterpreterTTS(options = {}) {
     interpreterPlayback.url = '';
   }
   window.speechSynthesis?.cancel();
-  endInterpreterCaptureSuppression(true);
+  if (interpreterState.playbackActive) endInterpreterCaptureSuppression();
+  if (options.clearCaptureGuard) endInterpreterCaptureSuppression(true);
   finishInterpreterEchoReference(interpreterPlayback.activeEchoReference);
   endInterpreterHighlight();
   if (!options.keepQueue) {
@@ -2952,7 +2977,7 @@ window.stopInterpreter = async function stopInterpreter() {
   interpreterState.captureRequestId += 1;
   interpreterState.listening = false;
   interpreterState.starting = false;
-  stopInterpreterTTS();
+  stopInterpreterTTS({ clearCaptureGuard: true });
 
   const active = interpreterState.activeUtterance;
   interpreterState.activeUtterance = null;
@@ -3087,6 +3112,7 @@ function describeCaptureError(error) {
     return '标签页未共享音频；请开启标签页音频或系统“立体声混音”';
   }
   if (error.message === 'NoDisplayCapture') return '当前浏览器不支持标签页音频，请使用最新版 Chrome 或 Edge';
+  if (error.message === 'LoopbackOutputConflict') return '回采设备与译音输出属于同一虚拟线路；请共享带音频的标签页，或使用独立的 VoiceMeeter/Cable 总线';
   if (error.message === 'AudioCaptureTimeout') {
     if (interpreterState.source === 'system') return '等待共享超时，请重新选择标签页并共享音频';
     if (interpreterState.source === 'meeting') return '会议共享或麦克风授权超时，请重新开始';
