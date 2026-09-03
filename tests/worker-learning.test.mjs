@@ -53,7 +53,7 @@ assert.equal(result.partial, false);
 assert.equal(requestedModel, '@cf/zai-org/glm-4.7-flash');
 assert.deepEqual(requestedOptions.response_format, { type: 'json_object' });
 assert.deepEqual(requestedOptions.chat_template_kwargs, { enable_thinking: false });
-assert.equal(requestedOptions.max_completion_tokens, 450);
+assert.equal(requestedOptions.max_completion_tokens, 320);
 
 const choicesResponse = await worker.fetch(request({
   text: 'world',
