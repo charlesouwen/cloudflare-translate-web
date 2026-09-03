@@ -1554,6 +1554,12 @@ function assessWhisperTranscript(result, text, { isMusic, voicedMs, peakLevel, w
   const hasProviderEvidence = Number.isFinite(durationAfterVad) || averageNoSpeech !== null ||
     averageLogProbability !== null || Number.isFinite(maximumCompression) || segments.length > 0;
   const captionArtifact = isFixedCaptionHallucination(text) || looksLikeCreatorBoilerplate(text);
+  if (captionArtifact && Number.isFinite(voicedMs) && voicedMs < 650 && normalized.length >= 4) {
+    lowEvidence.push('short-client-caption');
+  }
+  if (captionArtifact && Number.isFinite(peakLevel) && peakLevel < 0.006 && normalized.length >= 4) {
+    lowEvidence.push('weak-client-caption');
+  }
   if (captionArtifact && !hasProviderEvidence && !Number.isFinite(voicedMs) && !Number.isFinite(peakLevel)) {
     lowEvidence.push('missing-speech-evidence');
   }
@@ -1679,6 +1685,38 @@ async function handleSTT(request, env) {
 
   const bytes = new Uint8Array(audioBuffer);
   const wavEvidence = measurePcmWavEvidence(bytes);
+  const clientSilence = Number.isFinite(voicedMs) && voicedMs < 80 &&
+    Number.isFinite(peakLevel) && peakLevel < 0.002;
+  const pcmSilence = wavEvidence && wavEvidence.rms < 0.0008 && wavEvidence.peak < 0.002;
+  if (clientSilence || pcmSilence) {
+    const direction = resolveTranscriptDirection('', myLang, theirLang, forcedLang, forcedLang);
+    const duration = Date.now() - startedAt;
+    return jsonResp({
+      text: '',
+      language: direction.language || null,
+      source_language: direction.sourceLanguage || null,
+      target_language: direction.targetLanguage || null,
+      speaker: direction.speakerSide,
+      speaker_side: direction.speakerSide,
+      direction: direction.direction,
+      direction_confidence: direction.confidence,
+      direction_method: direction.method,
+      word_count: 0,
+      mode: transcriptMode,
+      corrected: false,
+      asr_source: 'acoustic-gate',
+      asr_confidence: 0,
+      accepted: false,
+      whisper_filtered_reason: 'no-audio-signal',
+      speech_duration: 0,
+      client_voiced_ms: voicedMs,
+      content_mode: contentMode,
+      processing_ms: duration,
+    }, 200, {
+      'Server-Timing': `stt;dur=${duration}`,
+      ...(chunkId ? { 'X-Chunk-Id': chunkId } : {}),
+    });
+  }
   const binaryChunks = [];
   for (let i = 0; i < bytes.byteLength; i += 8192) {
     binaryChunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 8192)));

@@ -1,8 +1,8 @@
 /**
- * 同声传译 v7
+ * 同声传译 v29
  *
  * MediaRecorder 在音轨就绪后立即采集；Silero VAD 在后台增强句段边界。
- * VAD 或 Web Audio 不可用时分别回退到自适应音量分段和定时分段。
+ * VAD 不可用时回退到自适应音量分段；所有路径都先验证语音能量再提交识别。
  */
 
 const INTERP_SAMPLE_RATE = 16000;
@@ -71,6 +71,8 @@ const interpreterState = {
   autoplay: true,
   tone: 'Standard',
   voiceName: '',
+  inputDeviceId: '',
+  outputDeviceId: '',
   voices: [],
   asrEngine: 'fusion',
   bingConfig: null,
@@ -79,6 +81,9 @@ const interpreterState = {
   bingRestartTimer: null,
   bingPCMProcessor: null,
   bingMuteGain: null,
+  bingSpeechPreRoll: [],
+  bingSpeechGateOpen: false,
+  bingSpeechTailRemaining: 0,
   bingActive: false,
   listening: false,
   starting: false,
@@ -97,11 +102,14 @@ const interpreterState = {
   lastSignalAt: 0,
   captureRequestId: 0,
   timedChunkTimer: null,
+  playbackActive: false,
+  playbackGuardUntil: 0,
 };
 
 const interpreterPlayback = {
   audio: null,
   player: null,
+  controller: null,
   primed: false,
   url: '',
   animationFrameId: 0,
@@ -109,6 +117,21 @@ const interpreterPlayback = {
   runId: 0,
   echoReferences: [],
   activeEchoReference: null,
+  finish: null,
+};
+
+const interpreterMeeting = {
+  stream: null,
+  audioContext: null,
+  sourceNode: null,
+  processor: null,
+  muteGain: null,
+  preRoll: [],
+  activeUtterance: null,
+  noiseFloor: 0.0025,
+  calibrationUntil: 0,
+  onsetFrames: 0,
+  silenceMs: 0,
 };
 
 function initInterpreter() {
@@ -122,7 +145,8 @@ function initInterpreter() {
   if (savedMyLang && myLang) myLang.value = savedMyLang;
   if (savedTheirLang && theirLang) theirLang.value = savedTheirLang;
 
-  interpreterState.source = localStorage.getItem('interp_audio_source') || migrateLegacySource();
+  const savedSource = localStorage.getItem('interp_audio_source') || migrateLegacySource();
+  interpreterState.source = ['microphone', 'system', 'meeting'].includes(savedSource) ? savedSource : 'microphone';
   const savedContentMode = localStorage.getItem('interp_content_mode');
   const contentModeVersion = localStorage.getItem('interp_content_mode_version');
   interpreterState.contentMode = contentModeVersion === '2' && ['conversation', 'music'].includes(savedContentMode)
@@ -141,10 +165,17 @@ function initInterpreter() {
   const savedTone = localStorage.getItem('interp_tone');
   interpreterState.tone = ['Standard', 'Casual', 'Formal'].includes(savedTone) ? savedTone : 'Standard';
   interpreterState.voiceName = localStorage.getItem('interp_voice_name') || '';
+  interpreterState.inputDeviceId = localStorage.getItem('interp_input_device') || '';
+  interpreterState.outputDeviceId = localStorage.getItem('interp_output_device') || '';
   const savedAsr = localStorage.getItem('interp_asr_engine');
   interpreterState.asrEngine = ['fusion', 'whisper', 'bing'].includes(savedAsr) ? savedAsr : 'fusion';
   const savedAutoplay = localStorage.getItem('interp_autoplay_enabled');
-  if (savedAutoplay !== null) {
+  const savedSourceAutoplay = localStorage.getItem(`interp_autoplay_${interpreterState.source}`);
+  if (savedSourceAutoplay !== null) {
+    interpreterState.autoplay = savedSourceAutoplay === 'true';
+  } else if (interpreterState.source === 'system') {
+    interpreterState.autoplay = false;
+  } else if (savedAutoplay !== null) {
     interpreterState.autoplay = savedAutoplay === 'true';
   } else {
     interpreterState.autoplay = localStorage.getItem('interp_autoplay_my') !== 'false' ||
@@ -177,6 +208,16 @@ function initInterpreter() {
       }
       interpreterState.source = button.dataset.interpSource;
       localStorage.setItem('interp_audio_source', interpreterState.source);
+      const savedForSource = localStorage.getItem(`interp_autoplay_${interpreterState.source}`);
+      interpreterState.autoplay = savedForSource !== null
+        ? savedForSource === 'true'
+        : interpreterState.source === 'system'
+          ? false
+          : localStorage.getItem('interp_autoplay_enabled') !== 'false';
+      if (interpreterState.source === 'meeting') {
+        interpreterState.contentMode = 'conversation';
+        localStorage.setItem('interp_content_mode', interpreterState.contentMode);
+      }
       updateInterpreterControls();
     });
   });
@@ -215,6 +256,7 @@ function initInterpreter() {
     autoplayToggle.addEventListener('change', () => {
       interpreterState.autoplay = autoplayToggle.checked;
       localStorage.setItem('interp_autoplay_enabled', String(interpreterState.autoplay));
+      localStorage.setItem(`interp_autoplay_${interpreterState.source}`, String(interpreterState.autoplay));
       if (interpreterState.autoplay) void primeInterpreterPlayback();
       else stopInterpreterTTS();
     });
@@ -246,6 +288,25 @@ function initInterpreter() {
     localStorage.setItem('interp_voice_name', interpreterState.voiceName);
   });
 
+  const inputDevice = document.getElementById('interpInputDevice');
+  inputDevice?.addEventListener('change', () => {
+    interpreterState.inputDeviceId = inputDevice.value || '';
+    localStorage.setItem('interp_input_device', interpreterState.inputDeviceId);
+  });
+  const outputDevice = document.getElementById('interpOutputDevice');
+  outputDevice?.addEventListener('change', () => {
+    interpreterState.outputDeviceId = outputDevice.value || '';
+    localStorage.setItem('interp_output_device', interpreterState.outputDeviceId);
+    void applyInterpreterOutputDevice(getInterpreterAudioPlayer()).catch((error) => {
+      console.warn('[interpreter] output device selection failed:', error);
+      notifyInterpreter('无法使用所选译音输出设备');
+    });
+  });
+  document.getElementById('interpOutputPicker')?.addEventListener('click', () => {
+    void chooseInterpreterOutputDevice();
+  });
+  navigator.mediaDevices?.addEventListener?.('devicechange', () => void loadInterpreterAudioDevices());
+
   document.getElementById('interpMicGlobal')?.addEventListener('click', async () => {
     if (interpreterState.autoplay) void primeInterpreterPlayback();
     if (interpreterState.listening || interpreterState.starting) {
@@ -272,6 +333,7 @@ function initInterpreter() {
   updateInterpreterControls();
   updateInterpreterStatus();
   void loadInterpreterVoices();
+  void loadInterpreterAudioDevices();
 }
 
 function migrateLegacySource() {
@@ -310,11 +372,13 @@ function updateInterpreterControls() {
     button.disabled = interpreterState.listening || interpreterState.starting;
   });
   document.querySelectorAll('[data-interp-direction]').forEach((button) => {
-    button.setAttribute('aria-pressed', String(button.dataset.interpDirection === interpreterState.direction));
+    const effectiveDirection = interpreterState.source === 'meeting' ? 'auto' : interpreterState.direction;
+    button.setAttribute('aria-pressed', String(button.dataset.interpDirection === effectiveDirection));
+    button.disabled = interpreterState.source === 'meeting';
   });
   document.querySelectorAll('[data-interp-content]').forEach((button) => {
     button.setAttribute('aria-pressed', String(button.dataset.interpContent === interpreterState.contentMode));
-    button.disabled = interpreterState.listening || interpreterState.starting;
+    button.disabled = interpreterState.listening || interpreterState.starting || interpreterState.source === 'meeting';
   });
 
   const autoplayToggle = document.getElementById('interpAutoplayToggle');
@@ -338,6 +402,14 @@ function updateInterpreterControls() {
   if (voiceSelect && voiceSelect.value !== interpreterState.voiceName &&
       Array.from(voiceSelect.options).some((option) => option.value === interpreterState.voiceName)) {
     voiceSelect.value = interpreterState.voiceName;
+  }
+  const inputDevice = document.getElementById('interpInputDevice');
+  if (inputDevice) {
+    inputDevice.disabled = interpreterState.listening || interpreterState.starting || interpreterState.source === 'system';
+  }
+  const autoplayLabel = document.getElementById('interpAutoplayLabel');
+  if (autoplayLabel) {
+    autoplayLabel.textContent = interpreterState.source === 'meeting' ? '播报我方译文' : '自动播报';
   }
 }
 
@@ -401,7 +473,9 @@ async function startInterpreter() {
     interpreterState.fallbackCalibrationUntil = interpreterState.captureMethod !== 'display'
       ? interpreterState.streamStartedAt + 450
       : interpreterState.streamStartedAt;
+    if (interpreterState.source === 'meeting') await startMeetingMicrophoneCapture();
     startFallbackRecorder();
+    void loadInterpreterAudioDevices();
     document.getElementById('interpHint')?.classList.add('is-hidden');
 
     try {
@@ -462,7 +536,7 @@ async function startInterpreter() {
 }
 
 async function captureInterpreterStream(source) {
-  if (source === 'system') {
+  if (source === 'system' || source === 'meeting') {
     if (typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
       throw new Error('NoDisplayCapture');
     }
@@ -470,7 +544,7 @@ async function captureInterpreterStream(source) {
     try {
       displayStream = await requestMediaStream(() => navigator.mediaDevices.getDisplayMedia({
         video: { displaySurface: 'browser' },
-        audio: { suppressLocalAudioPlayback: false },
+        audio: { suppressLocalAudioPlayback: false, restrictOwnAudio: true },
         preferCurrentTab: false,
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
@@ -503,7 +577,7 @@ async function captureInterpreterStream(source) {
     }
     audioTrack.enabled = true;
     try {
-    audioTrack.contentHint = interpreterState.contentMode === 'music' ? 'music' : 'speech';
+      audioTrack.contentHint = interpreterState.contentMode === 'music' ? 'music' : 'speech';
     } catch {}
     interpreterState.captureMethod = 'display';
     interpreterState.displayStream = displayStream;
@@ -515,9 +589,11 @@ async function captureInterpreterStream(source) {
 
   let stream;
   const captureMusic = interpreterState.contentMode === 'music';
+  const selectedDevice = interpreterState.inputDeviceId;
   try {
     stream = await requestMediaStream(() => navigator.mediaDevices.getUserMedia({
       audio: {
+        ...(selectedDevice ? { deviceId: { exact: selectedDevice } } : {}),
         echoCancellation: { ideal: !captureMusic },
         noiseSuppression: { ideal: !captureMusic },
         autoGainControl: { ideal: !captureMusic },
@@ -663,7 +739,7 @@ function startMusicPCMProcessor() {
 }
 
 function handleMusicPCMProcess(event) {
-  if (!interpreterState.listening || interpreterState.mode !== 'music') return;
+  if (!interpreterState.listening || interpreterState.mode !== 'music' || shouldSuppressInterpreterCapture()) return;
   const frame = downsampleMusicFrame(event.inputBuffer, INTERP_SAMPLE_RATE);
   if (!frame.length) return;
   sendLiveAudioFrame(frame);
@@ -684,7 +760,8 @@ function handleMusicPCMProcess(event) {
   const latestLiveActivity = interpreterState.liveLastTranscriptAt || interpreterState.liveConnectedAt;
   const liveResponsive = interpreterState.liveSocketReady && !interpreterState.liveSocketFailed &&
     now - latestLiveActivity < INTERP_LIVE_STALL_MS;
-  if (!liveResponsive && newSamples >= INTERP_MUSIC_INTERIM_MIN_SAMPLES &&
+  if (!liveResponsive && utterance.voicedMs >= INTERP_MIN_VOICED_MS &&
+      utterance.peakLevel >= 0.0035 && newSamples >= INTERP_MUSIC_INTERIM_MIN_SAMPLES &&
       now - utterance.lastInterimAt >= INTERP_MUSIC_INTERIM_INTERVAL_MS) {
     queueInterimRecognition(utterance);
   }
@@ -712,6 +789,171 @@ function frameRms(samples) {
   let energy = 0;
   for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
   return Math.sqrt(energy / samples.length);
+}
+
+async function startMeetingMicrophoneCapture() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass || typeof AudioContextClass.prototype.createScriptProcessor !== 'function') {
+    throw new Error('MeetingMicrophoneUnavailable');
+  }
+  const selectedDevice = interpreterState.inputDeviceId;
+  let stream;
+  try {
+    stream = await requestMediaStream(() => navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...(selectedDevice ? { deviceId: { exact: selectedDevice } } : {}),
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: INTERP_SAMPLE_RATE },
+      },
+    }), 15000);
+  } catch (error) {
+    if (!['OverconstrainedError', 'NotReadableError', 'AbortError'].includes(error.name)) throw error;
+    stream = await requestMediaStream(() => navigator.mediaDevices.getUserMedia({ audio: true }), 15000);
+  }
+
+  let context;
+  let sourceNode;
+  let processor;
+  let muteGain;
+  try {
+    context = new AudioContextClass({ latencyHint: 'interactive' });
+    sourceNode = context.createMediaStreamSource(stream);
+    processor = context.createScriptProcessor(2048, 1, 1);
+    muteGain = context.createGain();
+    muteGain.gain.value = 0;
+    sourceNode.connect(processor);
+    processor.connect(muteGain);
+    muteGain.connect(context.destination);
+    processor.onaudioprocess = handleMeetingMicrophoneFrame;
+    if (context.state === 'suspended') await context.resume();
+
+    interpreterMeeting.stream = stream;
+    interpreterMeeting.audioContext = context;
+    interpreterMeeting.sourceNode = sourceNode;
+    interpreterMeeting.processor = processor;
+    interpreterMeeting.muteGain = muteGain;
+  } catch (error) {
+    if (processor) processor.onaudioprocess = null;
+    processor?.disconnect?.();
+    sourceNode?.disconnect?.();
+    muteGain?.disconnect?.();
+    stream.getTracks().forEach((track) => track.stop());
+    if (context && context.state !== 'closed') await context.close().catch(() => {});
+    throw error;
+  }
+  stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+    if (interpreterState.listening && interpreterState.source === 'meeting') {
+      setInterpreterError('会议麦克风已断开');
+      void window.stopInterpreter();
+    }
+  }, { once: true });
+  interpreterMeeting.preRoll = [];
+  interpreterMeeting.activeUtterance = null;
+  interpreterMeeting.noiseFloor = 0.0025;
+  interpreterMeeting.calibrationUntil = performance.now() + 500;
+  interpreterMeeting.onsetFrames = 0;
+  interpreterMeeting.silenceMs = 0;
+}
+
+function handleMeetingMicrophoneFrame(event) {
+  if (!interpreterState.listening || interpreterState.source !== 'meeting') return;
+  if (shouldSuppressInterpreterCapture()) {
+    interpreterMeeting.preRoll = [];
+    interpreterMeeting.onsetFrames = 0;
+    return;
+  }
+  const frame = downsampleMusicFrame(event.inputBuffer, INTERP_SAMPLE_RATE);
+  if (!frame.length) return;
+  const level = frameRms(frame);
+  const now = performance.now();
+  const durationMs = frame.length / INTERP_SAMPLE_RATE * 1000;
+  const threshold = Math.max(0.0045, interpreterMeeting.noiseFloor * 2.5 + 0.001);
+
+  interpreterMeeting.preRoll.push(frame.slice());
+  while (interpreterMeeting.preRoll.length > 5) interpreterMeeting.preRoll.shift();
+  if (!interpreterMeeting.activeUtterance && now < interpreterMeeting.calibrationUntil) {
+    interpreterMeeting.noiseFloor = interpreterMeeting.noiseFloor * 0.82 + level * 0.18;
+    return;
+  }
+  if (!interpreterMeeting.activeUtterance && level < threshold) {
+    interpreterMeeting.noiseFloor = interpreterMeeting.noiseFloor * 0.97 + level * 0.03;
+  }
+
+  if (!interpreterMeeting.activeUtterance) {
+    interpreterMeeting.onsetFrames = level >= threshold ? interpreterMeeting.onsetFrames + 1 : 0;
+    if (interpreterMeeting.onsetFrames < 2) return;
+    const utterance = createUtterance(interpreterMeeting.preRoll, false, {
+      source: 'microphone',
+      contentMode: 'conversation',
+      direction: 'mine',
+      autoplay: interpreterState.autoplay,
+    });
+    utterance.speechConfirmed = true;
+    utterance.voicedMs = durationMs * interpreterMeeting.onsetFrames;
+    utterance.peakLevel = level;
+    interpreterMeeting.activeUtterance = utterance;
+    interpreterMeeting.silenceMs = 0;
+    ensureUtteranceBubble(utterance);
+    updateInterpreterStatus('会议双通道 · 正在识别我方发言');
+    return;
+  }
+
+  const utterance = interpreterMeeting.activeUtterance;
+  utterance.frames.push(frame.slice());
+  utterance.sampleCount += frame.length;
+  utterance.peakLevel = Math.max(utterance.peakLevel, level);
+  if (level >= threshold) {
+    utterance.voicedMs += durationMs;
+    interpreterMeeting.silenceMs = 0;
+  } else {
+    interpreterMeeting.silenceMs += durationMs;
+  }
+  if (!utterance.finalQueued && utterance.sampleCount >= INTERP_INTERIM_MIN_SAMPLES &&
+      now - utterance.lastInterimAt >= INTERP_INTERIM_INTERVAL_MS) {
+    queueInterimRecognition(utterance);
+  }
+  if (interpreterMeeting.silenceMs >= 720 || utterance.sampleCount >= INTERP_MAX_UTTERANCE_SAMPLES) {
+    finalizeMeetingMicrophoneUtterance();
+  }
+}
+
+function finalizeMeetingMicrophoneUtterance(discard = false) {
+  const utterance = interpreterMeeting.activeUtterance;
+  interpreterMeeting.activeUtterance = null;
+  interpreterMeeting.preRoll = [];
+  interpreterMeeting.onsetFrames = 0;
+  interpreterMeeting.silenceMs = 0;
+  if (!utterance) return;
+  if (discard || utterance.voicedMs < INTERP_MIN_VOICED_MS || utterance.peakLevel < 0.0045) {
+    utterance.sttController?.abort();
+    utterance.bubble?.remove();
+    return;
+  }
+  finalizeUtterance(utterance, concatAudioFrames(utterance.frames));
+}
+
+async function cleanupMeetingMicrophoneCapture() {
+  finalizeMeetingMicrophoneUtterance(true);
+  if (interpreterMeeting.processor) interpreterMeeting.processor.onaudioprocess = null;
+  interpreterMeeting.processor?.disconnect?.();
+  interpreterMeeting.sourceNode?.disconnect?.();
+  interpreterMeeting.muteGain?.disconnect?.();
+  interpreterMeeting.stream?.getTracks().forEach((track) => track.stop());
+  if (interpreterMeeting.audioContext && interpreterMeeting.audioContext.state !== 'closed') {
+    await interpreterMeeting.audioContext.close().catch(() => {});
+  }
+  interpreterMeeting.stream = null;
+  interpreterMeeting.audioContext = null;
+  interpreterMeeting.sourceNode = null;
+  interpreterMeeting.processor = null;
+  interpreterMeeting.muteGain = null;
+  interpreterMeeting.preRoll = [];
+  interpreterMeeting.activeUtterance = null;
+  interpreterMeeting.onsetFrames = 0;
+  interpreterMeeting.silenceMs = 0;
 }
 
 function downsampleMusicFrame(audioBuffer, targetRate) {
@@ -755,7 +997,7 @@ function bingSpeechLocale(code) {
 function getBingRecognitionSides() {
   const mine = { speaker: 'mine', code: getMyLang(), locale: bingSpeechLocale(getMyLang()) };
   const theirs = { speaker: 'theirs', code: getTheirLang(), locale: bingSpeechLocale(getTheirLang()) };
-  if (interpreterState.contentMode === 'music' || interpreterState.direction === 'theirs') {
+  if (interpreterState.source === 'meeting' || interpreterState.contentMode === 'music' || interpreterState.direction === 'theirs') {
     return theirs.locale ? [theirs] : [];
   }
   if (interpreterState.direction === 'mine') return mine.locale ? [mine] : [];
@@ -872,8 +1114,8 @@ function handleBingRecognitionMessage(recognizer, rawMessage) {
     recognizer.hypothesis = mergeBingHypothesis(recognizer.hypothesis, text, recognizer.code);
     recognizer.history.push(text);
     recognizer.history = recognizer.history.slice(-8);
-    const utterance = interpreterState.activeUtterance || interpreterState.fallbackPendingUtterance || createUtterance([], true);
-    if (!interpreterState.activeUtterance && !interpreterState.fallbackPendingUtterance) interpreterState.activeUtterance = utterance;
+    const utterance = interpreterState.activeUtterance || interpreterState.fallbackPendingUtterance;
+    if (!utterance || shouldSuppressInterpreterCapture()) return;
     const winner = chooseBingRecognizer();
     const provisional = winner?.hypothesis || recognizer.hypothesis;
     if (provisional && (interpreterState.asrEngine === 'bing' || interpreterState.asrEngine === 'fusion')) {
@@ -892,8 +1134,8 @@ function handleBingRecognitionMessage(recognizer, rawMessage) {
     const text = chooseBingPhraseText(message.body, recognizer);
     if (!text) return;
     recognizer.finalText = text;
-    const utterance = interpreterState.activeUtterance || interpreterState.fallbackPendingUtterance || createUtterance([], true);
-    if (!interpreterState.activeUtterance && !interpreterState.fallbackPendingUtterance) interpreterState.activeUtterance = utterance;
+    const utterance = interpreterState.activeUtterance || interpreterState.fallbackPendingUtterance;
+    if (!utterance || shouldSuppressInterpreterCapture()) return;
     const winner = chooseBingRecognizer();
     if (!winner?.finalText) return;
     utterance.bingFinalText = winner.finalText;
@@ -1042,9 +1284,29 @@ function startBingPCMProcessor() {
     processor.connect(muteGain);
     muteGain.connect(context.destination);
     processor.onaudioprocess = (event) => {
-      if (!interpreterState.listening || !interpreterState.bingActive) return;
+      if (!interpreterState.listening || !interpreterState.bingActive || shouldSuppressInterpreterCapture()) return;
       const frame = downsampleMusicFrame(event.inputBuffer, INTERP_SAMPLE_RATE);
-      if (frame.length) sendBingAudioFrameToGroup(encodePCM16Frame(frame));
+      if (!frame.length) return;
+      const pcm = encodePCM16Frame(frame);
+      if (interpreterState.activeUtterance) {
+        if (!interpreterState.bingSpeechGateOpen) {
+          interpreterState.bingSpeechPreRoll.forEach((buffered) => sendBingAudioFrameToGroup(buffered));
+          interpreterState.bingSpeechPreRoll = [];
+          interpreterState.bingSpeechGateOpen = true;
+        }
+        interpreterState.bingSpeechTailRemaining = 12;
+        sendBingAudioFrameToGroup(pcm);
+        return;
+      }
+      if (interpreterState.bingSpeechGateOpen && interpreterState.bingSpeechTailRemaining > 0) {
+        interpreterState.bingSpeechTailRemaining -= 1;
+        sendBingAudioFrameToGroup(pcm);
+        if (interpreterState.bingSpeechTailRemaining === 0) interpreterState.bingSpeechGateOpen = false;
+        return;
+      }
+      interpreterState.bingSpeechGateOpen = false;
+      interpreterState.bingSpeechPreRoll.push(pcm);
+      while (interpreterState.bingSpeechPreRoll.length > 6) interpreterState.bingSpeechPreRoll.shift();
     };
     interpreterState.bingPCMProcessor = processor;
     interpreterState.bingMuteGain = muteGain;
@@ -1079,6 +1341,17 @@ function closeBingRecognition() {
   });
   interpreterState.bingGroup = null;
   interpreterState.bingAudioPrebuffer = [];
+  interpreterState.bingSpeechPreRoll = [];
+  interpreterState.bingSpeechGateOpen = false;
+  interpreterState.bingSpeechTailRemaining = 0;
+}
+
+function resetBingRecognitionCandidates() {
+  interpreterState.bingGroup?.recognizers?.forEach((recognizer) => {
+    recognizer.hypothesis = '';
+    recognizer.finalText = '';
+    recognizer.history = [];
+  });
 }
 
 function startLiveRecognition() {
@@ -1090,7 +1363,7 @@ function startLiveRecognition() {
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const language = getForcedLanguage({
-    direction: interpreterState.direction,
+    direction: interpreterState.source === 'meeting' ? 'theirs' : interpreterState.direction,
     contentMode: interpreterState.contentMode,
     myLang: getMyLang(),
     theirLang: getTheirLang(),
@@ -1156,7 +1429,7 @@ function encodePCM16Frame(samples) {
 }
 
 function handleLiveRecognitionMessage(rawMessage) {
-  if (!interpreterState.listening || interpreterState.contentMode !== 'music') return;
+  if (!interpreterState.listening || interpreterState.contentMode !== 'music' || shouldSuppressInterpreterCapture()) return;
   let message;
   try {
     message = JSON.parse(typeof rawMessage === 'string' ? rawMessage : new TextDecoder().decode(rawMessage));
@@ -1239,28 +1512,31 @@ async function startSileroVAD() {
 }
 
 function handleVADSpeechStart() {
-  if (!interpreterState.listening) return;
+  if (!interpreterState.listening || shouldSuppressInterpreterCapture()) return;
   interpreterState.vadSpeaking = true;
   interpreterState.fallbackSilenceSince = 0;
   if (!interpreterState.activeUtterance) {
+    resetBingRecognitionCandidates();
     interpreterState.activeUtterance = createUtterance([], true);
   }
   updateInterpreterStatus();
 }
 
 function handleVADSpeechRealStart() {
+  if (shouldSuppressInterpreterCapture()) return;
   if (!interpreterState.activeUtterance) handleVADSpeechStart();
   if (interpreterState.activeUtterance) interpreterState.activeUtterance.speechConfirmed = true;
   ensureUtteranceBubble(interpreterState.activeUtterance);
 }
 
 function handleVADFrame(probabilities) {
-  if (interpreterState.listening && probabilities?.isSpeech > 0.7) {
+  if (interpreterState.listening && !shouldSuppressInterpreterCapture() && probabilities?.isSpeech > 0.7) {
     interpreterState.vadSpeaking = true;
   }
 }
 
 function handleVADSpeechEnd() {
+  if (shouldSuppressInterpreterCapture()) return;
   interpreterState.vadSpeaking = false;
   if (interpreterState.activeUtterance) finishFallbackUtterance();
 }
@@ -1277,21 +1553,25 @@ function forceSplitUtterance() {
   finishFallbackUtterance();
 }
 
-function createUtterance(prefillFrames = [], fallback = false) {
+function createUtterance(prefillFrames = [], fallback = false, options = {}) {
   const frames = prefillFrames.map((frame) => frame.slice());
-  const contentMode = interpreterState.contentMode;
+  const contentMode = options.contentMode || interpreterState.contentMode;
+  const myLang = getMyLang();
   const theirLang = getTheirLang();
+  const direction = options.direction || (interpreterState.source === 'meeting' ? 'theirs' : interpreterState.direction);
   return {
     id: ++interpreterState.sequence,
-    source: interpreterState.source,
+    source: options.source || (interpreterState.source === 'meeting' ? 'system' : interpreterState.source),
     contentMode,
-    direction: interpreterState.direction,
-    myLang: getMyLang(),
+    direction,
+    myLang,
     theirLang,
     correction: interpreterState.correction,
-    autoplay: interpreterState.autoplay,
+    autoplay: options.autoplay ?? interpreterState.autoplay,
+    sessionId: interpreterState.captureRequestId,
+    sessionSource: options.sessionSource || interpreterState.source,
     createdAt: Date.now(),
-    historyPrompt: buildRecognitionHistory(contentMode, theirLang),
+    historyPrompt: buildRecognitionHistory(contentMode, theirLang, direction, myLang),
     startedAt: performance.now(),
     frames,
     sampleCount: frames.reduce((total, frame) => total + frame.length, 0),
@@ -1335,12 +1615,14 @@ function createUtterance(prefillFrames = [], fallback = false) {
   };
 }
 
-function buildRecognitionHistory(contentMode, theirLang) {
+function buildRecognitionHistory(contentMode, theirLang, direction = 'auto', myLang = '') {
   let items = interpreterHistory;
-  if (contentMode === 'music') {
-    const language = languageBase(theirLang);
+  const expectedLanguage = direction === 'mine' ? myLang
+    : direction === 'theirs' || contentMode === 'music' ? theirLang : '';
+  if (expectedLanguage) {
+    const language = languageBase(expectedLanguage);
     items = items.filter((item) =>
-      item.contentMode === 'music' && languageBase(item.sl) === language,
+      item.contentMode === contentMode && languageBase(item.sl) === language,
     );
   }
   return items
@@ -1414,7 +1696,8 @@ function pickInterpreterMimeType() {
 }
 
 function monitorFallbackSpeech(level) {
-  if (!['recorder', 'hybrid'].includes(interpreterState.mode)) return;
+  if (!['recorder', 'hybrid', 'timed'].includes(interpreterState.mode)) return;
+  if (shouldSuppressInterpreterCapture()) return;
   const now = performance.now();
   const active = interpreterState.activeUtterance;
 
@@ -1428,8 +1711,23 @@ function monitorFallbackSpeech(level) {
     interpreterState.fallbackNoiseFloor = interpreterState.fallbackNoiseFloor * 0.96 + level * 0.04;
   }
 
+  if (interpreterState.mode === 'timed') {
+    if (!active) return;
+    const frameMs = Math.min(50, Math.max(0, now - active.lastMeterAt));
+    active.lastMeterAt = now;
+    active.peakLevel = Math.max(active.peakLevel, level);
+    if (level > threshold) active.voicedMs += frameMs;
+    if (active.voicedMs >= INTERP_MIN_VOICED_MS) active.speechConfirmed = true;
+    if ((active.speechConfirmed || active.voicedMs >= INTERP_MIN_VOICED_MS) &&
+        now - active.startedAt >= 900 && now - active.lastInterimAt >= INTERP_INTERIM_INTERVAL_MS) {
+      queueInterimRecognition(active, currentFallbackBlob());
+    }
+    return;
+  }
+
   if (level > threshold && now - interpreterState.streamStartedAt > 300) {
     if (!interpreterState.activeUtterance) {
+      resetBingRecognitionCandidates();
       interpreterState.activeUtterance = createUtterance([], true);
       ensureUtteranceBubble(interpreterState.activeUtterance);
     }
@@ -1451,7 +1749,8 @@ function monitorFallbackSpeech(level) {
     forceSplitUtterance();
     return;
   }
-  if (current && (current.speechConfirmed || current.voicedMs >= INTERP_MIN_VOICED_MS) &&
+  if (current && (!interpreterState.bingActive || interpreterState.asrEngine === 'whisper') &&
+      (current.speechConfirmed || current.voicedMs >= INTERP_MIN_VOICED_MS) &&
       now - current.startedAt >= 800 && now - current.lastInterimAt >= INTERP_INTERIM_INTERVAL_MS) {
     queueInterimRecognition(current, currentFallbackBlob());
   }
@@ -1465,8 +1764,7 @@ function finishFallbackUtterance() {
   const recorder = interpreterState.fallbackRecorder;
   const utterance = interpreterState.activeUtterance;
   if (!utterance || !recorder || recorder.state !== 'recording') return;
-  if (interpreterState.mode !== 'timed' && !utterance.speechConfirmed &&
-      utterance.voicedMs < INTERP_MIN_VOICED_MS) {
+  if (!utterance.speechConfirmed && utterance.voicedMs < INTERP_MIN_VOICED_MS) {
     discardFallbackUtterance();
     return;
   }
@@ -1750,24 +2048,16 @@ async function applyTranscriptResult(utterance, result, isFinal) {
   );
   text = echoFiltered.text;
   if (!text) {
-    const explicitlyRejected = window.InterpreterPlaybackEcho?.shouldRejectFinalTranscript
-      ? window.InterpreterPlaybackEcho.shouldRejectFinalTranscript(result, artifact)
-      : result?.accepted === false || Boolean(result?.whisper_filtered_reason) || artifact.strong;
-    if (isFinal && explicitlyRejected) {
+    if (isFinal) {
       utterance.translationController?.abort();
       utterance.translated = '';
       utterance.original = '';
+      utterance.transcriptRef.text = '';
       utterance.bubble?.remove();
       return;
     }
     if (echoFiltered.echoOnly) {
-      if (isFinal) utterance.bubble?.remove();
       return;
-    }
-    if (isFinal && utterance.original) {
-      await translateUtterance(utterance, utterance.original, true);
-    } else if (isFinal) {
-      utterance.bubble?.remove();
     }
     return;
   }
@@ -1930,32 +2220,19 @@ async function translateUtterance(utterance, text, isFinal) {
 
 async function translateInterpreterText(text, from, to, signal) {
   const selectedEngine = localStorage.getItem('translate_engine') || 'auto';
-  const preferBing = selectedEngine === 'bing' || (selectedEngine === 'auto' && interpreterState.tone !== 'Standard');
-  const providers = preferBing
-    ? ['bing-live', 'google', 'cloudflare']
-    : selectedEngine === 'google'
-      ? ['google', 'cloudflare']
-      : selectedEngine === 'cloudflare'
-        ? ['cloudflare', 'google']
-        : ['google', 'bing-live', 'cloudflare'];
-
-  let lastError;
-  for (const provider of providers) {
-    try {
-      const result = await requestInterpreterTranslation(provider, text, from, to, signal);
-      if (result.translatedText) return result;
-    } catch (error) {
-      if (error.name === 'AbortError') throw error;
-      lastError = error;
-    }
-  }
-  throw lastError || new Error('translation unavailable');
+  const provider = ['google', 'bing', 'cloudflare'].includes(selectedEngine) ? selectedEngine : '';
+  return requestInterpreterTranslation(provider, text, from, to, signal);
 }
 
 async function requestInterpreterTranslation(provider, text, from, to, signal) {
-  const payload = provider === 'bing-live'
-    ? { text, from, to, tone: interpreterState.tone, isVoice: true }
-    : { text, sl: from, tl: to, provider };
+  const payload = {
+    text,
+    sl: from,
+    tl: to,
+    tone: interpreterState.tone,
+    isVoice: true,
+    ...(provider ? { provider } : {}),
+  };
   const response = await fetch('/api/translate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1994,7 +2271,7 @@ function commitUtterance(utterance, sl, tl) {
     contentMode: utterance.contentMode,
   });
 
-  if (directionKnown && interpreterState.autoplay && utterance.autoplay && utterance.translated) {
+  if (shouldAutoplayInterpreterUtterance(utterance)) {
     setInterpreterPlaybackState(utterance.bubble, 'queued');
     void playInterpreterTTS(utterance.translated, tl, {
       queue: true,
@@ -2006,6 +2283,15 @@ function commitUtterance(utterance, sl, tl) {
       notifyInterpreter('译文已生成，但浏览器阻止了自动播报；可点击扬声器重试');
     });
   }
+}
+
+function shouldAutoplayInterpreterUtterance(utterance) {
+  const directionKnown = utterance?.isMine === true || utterance?.isMine === false;
+  const currentSession = interpreterState.listening && utterance?.sessionId === interpreterState.captureRequestId;
+  const meetingLaneCanSpeak = utterance?.sessionSource !== 'meeting' ||
+    (utterance?.source === 'microphone' && utterance?.isMine === true);
+  return Boolean(directionKnown && currentSession && meetingLaneCanSpeak &&
+    interpreterState.autoplay && utterance?.autoplay && utterance?.translated);
 }
 
 function ensureUtteranceBubble(utterance) {
@@ -2244,6 +2530,48 @@ function playInterpreterTTS(text, lang, options = {}) {
   });
 }
 
+function shouldSuppressInterpreterCapture() {
+  return interpreterState.playbackActive || performance.now() < interpreterState.playbackGuardUntil;
+}
+
+function clearBingRecognitionBuffers() {
+  resetBingRecognitionCandidates();
+  interpreterState.bingAudioPrebuffer = [];
+  interpreterState.bingSpeechPreRoll = [];
+  interpreterState.bingSpeechGateOpen = false;
+  interpreterState.bingSpeechTailRemaining = 0;
+}
+
+function beginInterpreterCaptureSuppression() {
+  interpreterState.playbackActive = true;
+  interpreterState.playbackGuardUntil = Number.POSITIVE_INFINITY;
+  const active = interpreterState.activeUtterance;
+  if (active && !active.finalQueued && !active.committed) {
+    active.sttController?.abort();
+    active.translationController?.abort();
+    active.bubble?.remove();
+    interpreterState.activeUtterance = null;
+  }
+  finalizeMeetingMicrophoneUtterance(true);
+  clearBingRecognitionBuffers();
+}
+
+function endInterpreterCaptureSuppression(immediate = false) {
+  interpreterState.playbackActive = false;
+  const guardMs = immediate ? 0 : (interpreterState.captureMethod === 'loopback' ? 1200 : 700);
+  interpreterState.playbackGuardUntil = performance.now() + guardMs;
+  window.setTimeout(() => {
+    if (interpreterState.playbackActive || performance.now() < interpreterState.playbackGuardUntil) return;
+    clearBingRecognitionBuffers();
+    if (interpreterState.fallbackRecorder?.state === 'recording' && !interpreterState.fallbackPendingUtterance) {
+      rotateFallbackRecorder();
+    }
+    if (interpreterState.listening && interpreterState.mode === 'music' && !interpreterState.activeUtterance) {
+      interpreterState.activeUtterance = createUtterance([], false);
+    }
+  }, guardMs + 20);
+}
+
 async function pumpInterpreterTTS() {
   if (interpreterState.ttsPlaying) return;
   interpreterState.ttsPlaying = true;
@@ -2265,6 +2593,8 @@ async function pumpInterpreterTTS() {
 async function speakInterpreterTTS(text, lang, options = {}) {
   const runId = ++interpreterPlayback.runId;
   stopInterpreterTTS({ keepQueue: true, increment: false });
+  const controller = new AbortController();
+  interpreterPlayback.controller = controller;
   const bubble = options.bubble || options.utterance?.bubble || null;
   const target = bubble?.querySelector('.interp-msg-translated') || null;
   const highlightContext = { target, text, lang, echoReference: null };
@@ -2280,34 +2610,51 @@ async function speakInterpreterTTS(text, lang, options = {}) {
         voiceName: interpreterState.voiceName || '',
         rate: INTERP_TTS_RATE,
       }),
+      signal: controller.signal,
     });
+    if (runId !== interpreterPlayback.runId) return;
     if (response.ok && /audio\//i.test(response.headers.get('content-type') || '')) {
       const blob = await response.blob();
       await playInterpreterAudio(blob, text, highlightContext, runId);
       return;
     }
-    await speakInterpreterBrowser(text, lang, highlightContext, runId);
+    if (interpreterState.outputDeviceId) {
+      await playGoogleInterpreterTTS(text, lang, highlightContext, runId, controller.signal);
+    } else {
+      await speakInterpreterBrowser(text, lang, highlightContext, runId);
+    }
   } catch (error) {
     if (runId !== interpreterPlayback.runId) return;
     console.warn('[interpreter] Bing TTS unavailable, using browser voice:', error);
     try {
+      if (interpreterState.outputDeviceId) throw new Error('Selected output requires streamed TTS audio');
       await speakInterpreterBrowser(text, lang, highlightContext, runId);
     } catch (browserError) {
-      const googleResponse = await fetch(`/api/tts?q=${encodeURIComponent(text)}&tl=${encodeURIComponent(lang)}&provider=google`);
-      if (!googleResponse.ok || !/audio\//i.test(googleResponse.headers.get('content-type') || '')) {
+      try {
+        await playGoogleInterpreterTTS(text, lang, highlightContext, runId, controller.signal);
+      } catch {
         throw browserError;
       }
-      const blob = await googleResponse.blob();
-      beginInterpreterHighlight(highlightContext);
-      await playInterpreterAudio(blob, text, highlightContext, runId);
     }
   } finally {
+    if (interpreterPlayback.controller === controller) interpreterPlayback.controller = null;
     finishInterpreterEchoReference(highlightContext.echoReference);
     if (runId === interpreterPlayback.runId) {
       endInterpreterHighlight();
       setInterpreterPlaybackState(bubble, 'idle');
     }
   }
+}
+
+async function playGoogleInterpreterTTS(text, lang, context, runId, signal) {
+  const response = await fetch(`/api/tts?q=${encodeURIComponent(text)}&tl=${encodeURIComponent(lang)}&provider=google`, { signal });
+  if (runId !== interpreterPlayback.runId) return;
+  if (!response.ok || !/audio\//i.test(response.headers.get('content-type') || '')) {
+    throw new Error(`Google TTS failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  beginInterpreterHighlight(context);
+  await playInterpreterAudio(blob, text, context, runId);
 }
 
 function getInterpreterAudioPlayer() {
@@ -2318,6 +2665,63 @@ function getInterpreterAudioPlayer() {
     interpreterPlayback.player = player;
   }
   return interpreterPlayback.player;
+}
+
+async function applyInterpreterOutputDevice(player) {
+  if (!player || typeof player.setSinkId !== 'function') {
+    if (interpreterState.outputDeviceId) throw new Error('AudioOutputSelectionUnsupported');
+    return;
+  }
+  await player.setSinkId(interpreterState.outputDeviceId || '');
+}
+
+async function loadInterpreterAudioDevices() {
+  if (typeof navigator.mediaDevices?.enumerateDevices !== 'function') return;
+  const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+  const input = document.getElementById('interpInputDevice');
+  const output = document.getElementById('interpOutputDevice');
+  replaceDeviceOptions(input, devices.filter((device) => device.kind === 'audioinput'),
+    '系统默认麦克风', interpreterState.inputDeviceId, '麦克风');
+  replaceDeviceOptions(output, devices.filter((device) => device.kind === 'audiooutput'),
+    '系统默认扬声器', interpreterState.outputDeviceId, '扬声器');
+  const picker = document.getElementById('interpOutputPicker');
+  if (picker) picker.hidden = typeof navigator.mediaDevices?.selectAudioOutput !== 'function';
+}
+
+function replaceDeviceOptions(select, devices, defaultLabel, selectedId, genericLabel) {
+  if (!select) return;
+  const options = [new Option(defaultLabel, '')];
+  devices.forEach((device, index) => options.push(new Option(
+    device.label || `${genericLabel} ${index + 1}`,
+    device.deviceId,
+  )));
+  select.replaceChildren(...options);
+  if (selectedId && devices.some((device) => device.deviceId === selectedId)) select.value = selectedId;
+  else if (selectedId) {
+    if (select.id === 'interpInputDevice') {
+      interpreterState.inputDeviceId = '';
+      localStorage.removeItem('interp_input_device');
+    }
+    if (select.id === 'interpOutputDevice') {
+      interpreterState.outputDeviceId = '';
+      localStorage.removeItem('interp_output_device');
+    }
+  }
+}
+
+async function chooseInterpreterOutputDevice() {
+  if (typeof navigator.mediaDevices?.selectAudioOutput !== 'function') return;
+  try {
+    const device = await navigator.mediaDevices.selectAudioOutput();
+    if (!device?.deviceId) return;
+    interpreterState.outputDeviceId = device.deviceId;
+    localStorage.setItem('interp_output_device', device.deviceId);
+    await loadInterpreterAudioDevices();
+    await applyInterpreterOutputDevice(getInterpreterAudioPlayer());
+    notifyInterpreter(`译音输出已切换到 ${device.label || '所选设备'}`);
+  } catch (error) {
+    if (error.name !== 'NotAllowedError') notifyInterpreter('无法选择译音输出设备');
+  }
 }
 
 async function primeInterpreterPlayback() {
@@ -2331,6 +2735,7 @@ async function primeInterpreterPlayback() {
     player.muted = true;
     player.volume = 0;
     player.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+    await applyInterpreterOutputDevice(player);
     await player.play();
     player.pause();
     player.currentTime = 0;
@@ -2396,17 +2801,21 @@ function playInterpreterAudio(blob, text, context, runId) {
     const finish = (error) => {
       if (settled) return;
       settled = true;
+      endInterpreterCaptureSuppression();
       cancelAnimationFrame(interpreterPlayback.animationFrameId);
       interpreterPlayback.animationFrameId = 0;
       if (!error) updateInterpreterHighlight(text.length);
       finishInterpreterEchoReference(context.echoReference);
       if (interpreterPlayback.audio === audio) interpreterPlayback.audio = null;
       if (interpreterPlayback.url === url) interpreterPlayback.url = '';
+      if (interpreterPlayback.finish === finish) interpreterPlayback.finish = null;
       try { audio.removeAttribute('src'); } catch {}
       URL.revokeObjectURL(url);
       error ? reject(error) : resolve();
     };
+    interpreterPlayback.finish = finish;
     audio.onplay = () => {
+      beginInterpreterCaptureSuppression();
       beginInterpreterEchoReference(context);
       setInterpreterPlaybackState(context.target?.closest('.interp-msg-bubble'), 'speaking');
     };
@@ -2422,7 +2831,7 @@ function playInterpreterAudio(blob, text, context, runId) {
     };
     audio.onended = () => finish();
     audio.onerror = () => finish(new Error('audio playback failed'));
-    audio.play().catch(finish);
+    applyInterpreterOutputDevice(audio).then(() => audio.play()).catch(finish);
   });
 }
 
@@ -2434,6 +2843,17 @@ function speakInterpreterBrowser(text, lang, context, runId) {
     }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (interpreterPlayback.finish === finish) interpreterPlayback.finish = null;
+      endInterpreterCaptureSuppression();
+      finishInterpreterEchoReference(context.echoReference);
+      if (!error) updateInterpreterHighlight(text.length);
+      error ? reject(error) : resolve();
+    };
+    interpreterPlayback.finish = finish;
     utterance.lang = normalizeInterpreterSpeechLocale(lang);
     utterance.rate = 0.92;
     utterance.onboundary = (event) => {
@@ -2441,17 +2861,13 @@ function speakInterpreterBrowser(text, lang, context, runId) {
         updateInterpreterHighlight(event.charIndex + Math.max(1, event.charLength || 1));
       }
     };
-    utterance.onend = () => {
-      finishInterpreterEchoReference(context.echoReference);
-      updateInterpreterHighlight(text.length);
-      resolve();
-    };
+    utterance.onend = () => finish();
     utterance.onerror = (event) => {
-      finishInterpreterEchoReference(context.echoReference);
-      if (event.error === 'canceled' || event.error === 'interrupted') resolve();
-      else reject(new Error(`browser speech failed: ${event.error || 'unknown'}`));
+      if (event.error === 'canceled' || event.error === 'interrupted') finish();
+      else finish(new Error(`browser speech failed: ${event.error || 'unknown'}`));
     };
     setInterpreterPlaybackState(context.target?.closest('.interp-msg-bubble'), 'speaking');
+    beginInterpreterCaptureSuppression();
     beginInterpreterEchoReference(context);
     window.speechSynthesis.speak(utterance);
   });
@@ -2510,7 +2926,12 @@ function endInterpreterHighlight() {
 
 function stopInterpreterTTS(options = {}) {
   interpreterPlayback.runId += options.increment === false ? 0 : 1;
+  interpreterPlayback.controller?.abort();
+  interpreterPlayback.controller = null;
   interpreterPlayback.audio?.pause?.();
+  const finish = interpreterPlayback.finish;
+  interpreterPlayback.finish = null;
+  finish?.();
   interpreterPlayback.audio?.removeAttribute?.('src');
   interpreterPlayback.audio = null;
   if (interpreterPlayback.url) {
@@ -2518,6 +2939,7 @@ function stopInterpreterTTS(options = {}) {
     interpreterPlayback.url = '';
   }
   window.speechSynthesis?.cancel();
+  endInterpreterCaptureSuppression(true);
   finishInterpreterEchoReference(interpreterPlayback.activeEchoReference);
   endInterpreterHighlight();
   if (!options.keepQueue) {
@@ -2530,6 +2952,7 @@ window.stopInterpreter = async function stopInterpreter() {
   interpreterState.captureRequestId += 1;
   interpreterState.listening = false;
   interpreterState.starting = false;
+  stopInterpreterTTS();
 
   const active = interpreterState.activeUtterance;
   interpreterState.activeUtterance = null;
@@ -2546,6 +2969,13 @@ window.stopInterpreter = async function stopInterpreter() {
     } else {
       active.bubble?.remove();
     }
+  }
+
+  const meetingUtterance = interpreterMeeting.activeUtterance;
+  if (meetingUtterance && !meetingUtterance.finalQueued && !meetingUtterance.committed) {
+    finalizeMeetingMicrophoneUtterance(
+      !meetingUtterance.speechConfirmed && meetingUtterance.voicedMs < INTERP_MIN_VOICED_MS,
+    );
   }
 
   await cleanupInterpreterCapture();
@@ -2568,6 +2998,7 @@ async function cleanupInterpreterCapture() {
   }
   interpreterState.vadReady = false;
   interpreterState.vadSpeaking = false;
+  await cleanupMeetingMicrophoneCapture();
   if (interpreterState.fallbackRecorder?.state === 'recording') {
     interpreterState.fallbackRecorder.stop();
   }
@@ -2616,10 +3047,11 @@ function updateInterpreterStatus(override = '') {
   let status = override;
   if (!status) {
     if (interpreterState.starting) status = '正在连接音频';
-    else if (interpreterState.activeUtterance) status = '正在聆听';
+    else if (interpreterState.activeUtterance || interpreterMeeting.activeUtterance) status = '正在聆听';
     else if (interpreterState.finalWorkers || interpreterState.finalQueue.length) status = '正在校正';
     else if (interpreterState.activeRequests) status = '正在翻译';
     else if (interpreterState.listening && interpreterState.inputSilent) status = '未检测到音频输入';
+    else if (interpreterState.listening && interpreterState.source === 'meeting') status = '双通道等待语音';
     else if (interpreterState.listening) status = '等待语音';
     else status = '就绪';
   }
@@ -2636,7 +3068,8 @@ function updateInterpreterStatus(override = '') {
   if (container) {
     container.dataset.liveState = interpreterState.inputSilent
       ? 'warning'
-      : interpreterState.activeUtterance ? 'speech' : interpreterState.listening ? 'listening' : 'idle';
+      : interpreterState.activeUtterance || interpreterMeeting.activeUtterance
+        ? 'speech' : interpreterState.listening ? 'listening' : 'idle';
   }
 }
 
@@ -2655,17 +3088,20 @@ function describeCaptureError(error) {
   }
   if (error.message === 'NoDisplayCapture') return '当前浏览器不支持标签页音频，请使用最新版 Chrome 或 Edge';
   if (error.message === 'AudioCaptureTimeout') {
-    return interpreterState.source === 'system'
-      ? '等待共享超时，请重新选择标签页并共享音频'
-      : '麦克风权限请求超时，请在地址栏允许麦克风';
+    if (interpreterState.source === 'system') return '等待共享超时，请重新选择标签页并共享音频';
+    if (interpreterState.source === 'meeting') return '会议共享或麦克风授权超时，请重新开始';
+    return '麦克风权限请求超时，请在地址栏允许麦克风';
   }
   if (error.name === 'NotAllowedError') {
-    return interpreterState.source === 'system' ? '已取消标签页音频共享' : '麦克风权限未授权';
+    if (interpreterState.source === 'system') return '已取消共享音频';
+    if (interpreterState.source === 'meeting') return '会议共享或麦克风权限未授权';
+    return '麦克风权限未授权';
   }
   if (error.name === 'NotFoundError') return '未找到可用音频设备';
   if (error.message === 'NoAudioTrack' || error.message === 'AudioTrackEnded') return '浏览器未返回可用音轨';
   if (error.message === 'NoSupportedRecorder') return '当前浏览器不支持实时录音';
   if (error.message === 'NoAudioContext') return '当前浏览器不支持音频处理';
+  if (error.message === 'MeetingMicrophoneUnavailable') return '当前浏览器无法启动会议麦克风，请使用最新版 Chrome 或 Edge';
   if (error.message === 'AudioAnalysisUnavailable') return '浏览器无法分析音频，已停止以避免静音误识别；请使用最新版 Chrome 或 Edge';
   return '无法访问音频来源';
 }

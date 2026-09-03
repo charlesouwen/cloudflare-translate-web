@@ -256,7 +256,8 @@
               <span class="interp-option-label">音频来源</span>
               <div class="interp-segmented" role="group" aria-label="音频来源">
                 <button type="button" data-interp-source="microphone" aria-pressed="true">麦克风</button>
-                <button type="button" data-interp-source="system" aria-pressed="false">标签页音频</button>
+                <button type="button" data-interp-source="system" aria-pressed="false">共享音频</button>
+                <button type="button" data-interp-source="meeting" aria-pressed="false">会议双通道</button>
               </div>
             </div>
             <div class="interp-option-group">
@@ -271,7 +272,7 @@
               <span class="interp-option-label">内容模式</span>
               <div class="interp-segmented" role="group" aria-label="内容模式">
                 <button type="button" data-interp-content="conversation" aria-pressed="true">对话</button>
-                <button type="button" data-interp-content="music" aria-pressed="false">音频</button>
+                <button type="button" data-interp-content="music" aria-pressed="false">歌曲 / 音乐</button>
               </div>
             </div>
             <div class="interp-option-group">
@@ -296,13 +297,28 @@
                 <option value="">&#33258;&#21160;&#36873;&#25321;&#65288;Bing Neural&#65289;</option>
               </select>
             </label>
+            <label class="interp-device-control">
+              <span class="interp-option-label">麦克风设备</span>
+              <select id="interpInputDevice" class="interp-device-select" aria-label="麦克风设备">
+                <option value="">系统默认麦克风</option>
+              </select>
+            </label>
+            <div class="interp-device-control">
+              <span class="interp-option-label">译音输出</span>
+              <span class="interp-device-picker">
+                <select id="interpOutputDevice" class="interp-device-select" aria-label="译音输出设备">
+                  <option value="">系统默认扬声器</option>
+                </select>
+                <button id="interpOutputPicker" class="interp-icon-btn" type="button" title="选择译音输出设备" aria-label="选择译音输出设备">↗</button>
+              </span>
+            </div>
             <label class="interp-check-control">
               <input id="interpCorrectionToggle" type="checkbox">
               <span>AI 校正</span>
             </label>
             <label class="interp-check-control">
               <input id="interpAutoplayToggle" type="checkbox" checked>
-              <span>自动播报</span>
+              <span id="interpAutoplayLabel">自动播报</span>
             </label>
           </div>
         </div>
@@ -392,7 +408,7 @@
       <div class="settings-group">
         <label data-i18n="translationEngine">翻译引擎</label>
         <select id="engineSelect" class="settings-select">
-            <option value="auto" data-i18n="engineAuto">自动（Google → Bing → AI）</option>
+            <option value="auto" data-i18n="engineAuto">自动（并发择优）</option>
             <option value="google" data-i18n="engineGoogle">仅 Google</option>
             <option value="bing" data-i18n="engineBing">仅 Bing</option>
             <option value="cloudflare" data-i18n="engineCF">仅 Cloudflare AI</option>
