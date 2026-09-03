@@ -42,6 +42,8 @@ const TRANSLATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const TRANSLATION_CACHE_MAX_ENTRIES = 256;
 const LEARNING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const LEARNING_CACHE_MAX_ENTRIES = 128;
+const LEARNING_MODEL = '@cf/zai-org/glm-4.7-flash';
+const LEARNING_TIMEOUT_MS = 8_000;
 const BING_WEB_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const BING_WEB_TTS_MAX_TEXT_LENGTH = 1500;
 const BING_WEB_TTS_TIMEOUT_MS = 8_000;
@@ -571,15 +573,18 @@ Use ${targetName} for explanations and translations. Keep examples useful, natur
   });
 
   try {
-    const response = await promiseWithTimeout(env.AI.run('@cf/meta/llama-3-8b-instruct', {
+    const response = await promiseWithTimeout(env.AI.run(LEARNING_MODEL, {
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPayload },
       ],
+      response_format: { type: 'json_object' },
+      chat_template_kwargs: { enable_thinking: false },
       temperature: 0.1,
-      max_tokens: 650,
-    }), 5_000, 'Learning guide generation timed out');
-    const parsed = parseLearningJson(response?.response);
+      max_completion_tokens: 450,
+    }), LEARNING_TIMEOUT_MS, 'Learning guide generation timed out');
+    const generated = response?.response ?? response?.choices?.[0]?.message?.content;
+    const parsed = parseLearningJson(generated);
     const result = normalizeLearningGuide(parsed, fallback);
     if (!result.partial) writeLearningCache(cacheKey, result);
     return jsonResp(result);

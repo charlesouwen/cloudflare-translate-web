@@ -25,9 +25,15 @@ const aiResponse = JSON.stringify({
   examples: ['Hello, everyone. — 大家好。'],
   synonyms: ['hi'],
 });
+let requestedModel = '';
+let requestedOptions = null;
 const env = {
   ASSETS: {},
-  AI: { run: async () => ({ response: `\`\`\`json\n${aiResponse}\n\`\`\`` }) },
+  AI: { run: async (model, options) => {
+    requestedModel = model;
+    requestedOptions = options;
+    return { response: `\`\`\`json\n${aiResponse}\n\`\`\`` };
+  } },
 };
 
 const response = await worker.fetch(request({
@@ -44,6 +50,25 @@ assert.equal(result.dict[0].terms[0], '你好');
 assert.equal(result.definitions[0].meanings[0].gloss, '用于问候。');
 assert.equal(result.engine, 'cloudflare-ai');
 assert.equal(result.partial, false);
+assert.equal(requestedModel, '@cf/zai-org/glm-4.7-flash');
+assert.deepEqual(requestedOptions.response_format, { type: 'json_object' });
+assert.deepEqual(requestedOptions.chat_template_kwargs, { enable_thinking: false });
+assert.equal(requestedOptions.max_completion_tokens, 450);
+
+const choicesResponse = await worker.fetch(request({
+  text: 'world',
+  from: 'en',
+  to: 'zh-CN',
+  translation: '世界',
+}), {
+  ASSETS: {},
+  AI: { run: async () => ({ choices: [{ message: { content: aiResponse } }] }) },
+});
+assert.equal(choicesResponse.status, 200);
+const choicesResult = await choicesResponse.json();
+assert.equal(choicesResult.engine, 'cloudflare-ai');
+assert.equal(choicesResult.partial, false,
+  'OpenAI-compatible Workers AI responses must populate the learning card');
 
 const fallbackResponse = await worker.fetch(request({
   text: 'goodbye',
