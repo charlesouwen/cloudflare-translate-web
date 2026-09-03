@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /images/
+
+Sitemap: https://fanyi.411081.xyz/sitemap.xml

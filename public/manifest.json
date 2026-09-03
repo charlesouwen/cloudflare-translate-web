@@ -1,0 +1,12 @@
+{
+  "name": "翻译 - Translate",
+  "short_name": "翻译",
+  "description": "免费在线翻译服务",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f9fa",
+  "theme_color": "#4285f4",
+  "icons": [
+    { "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

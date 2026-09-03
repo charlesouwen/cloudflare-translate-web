@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="免费在线翻译服务，支持文字、图片、文档翻译和同声传译。集成高精度云端AI，带来极速翻译体验。">
+  <meta name="keywords" content="翻译, 在线翻译, 拍照翻译, 图片翻译, 同声传译, 语音翻译, Google翻译替代, AI翻译, 文档翻译, Translate">
+  <!-- Open Graph / 社交媒体分享优化 -->
+  <meta property="og:title" content="极速 AI 翻译 - 全能在线翻译工具">
+  <meta property="og:description" content="支持文字、图片、文档及同声传译，随时随地跨语言沟通。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://fanyi.411081.xyz/">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#4285f4">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>极速翻译 - Translate</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="canonical" href="https://fanyi.411081.xyz/">
+  <meta name="robots" content="index, follow">
+  <meta property="og:image" content="https://fanyi.411081.xyz/images/og-preview.png">
+
+  <!-- ==================== Google 搜索引擎 JSON-LD 结构化数据 ==================== -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "极速 AI 翻译 - Translate",
+    "url": "https://fanyi.411081.xyz/",
+    "description": "免费、安全、极速的在线翻译工具，支持文本、拍照、图片、TXT/HTML文档翻译及智能同声传译。基于先进的Cloudflare Workers AI构建，提供媲美谷歌翻译的卓越体验。",
+    "applicationCategory": "UtilitiesApplication",
+    "operatingSystem": "All",
+    "browserRequirements": "Requires HTML5 support, WebRTC and Web Speech API",
+    "features": "Real-time Text Translation, Google-like Camera Image Translation, PWA Offline Support, Auto-Speech Simultaneous Interpretation",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+
+  <!-- ==================== UI 开关定制样式 ==================== -->
+  <style>
+    .switch input:checked + .slider { background-color: #4285f4; }
+    .switch .slider:before {
+      position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px;
+      background-color: white; transition: .3s; border-radius: 50%;
+    }
+    .switch input:checked + .slider:before { transform: translateX(16px); }
+  </style>
+
+  <!-- ==================== Google AdSense (懒加载优化) ==================== -->
+  <script>
+    // 延迟 2 秒加载广告代码，彻底避免阻塞用户首屏渲染与翻译交互体验
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        var script = document.createElement('script');
+        script.async = true;
+        script.src = "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4703532129300104";
+        script.crossOrigin = "anonymous";
+        document.head.appendChild(script);
+      }, 2000);
+    });
+  </script>
+  <!-- ==================== Tesseract.js (移动端优先稳定加载) ==================== -->
+  <script src="/js/tesseract/tesseract.min.js"></script>
+</head>
+<body>
+
+  <!-- ==================== 顶部导航 ==================== -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="header-left">
+        <span class="logo">🌐</span>
+        <h1 class="app-title" data-i18n="appTitle">翻译</h1>
+      </div>
+      <div class="header-right">
+        <button class="icon-btn" id="themeBtn" title="Theme">🌓</button>
+        <button class="icon-btn" id="historyBtn" data-i18n-title="history">📋</button>
+        <button class="icon-btn" id="settingsBtn" data-i18n-title="settings">⚙️</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ==================== 模式标签栏（桌面） ==================== -->
+  <nav class="tabs-bar">
+    <div class="tabs-inner">
+      <button class="tab-btn active" data-tab="text">
+        <span class="tab-icon">📝</span>
+        <span data-i18n="text">文字</span>
+      </button>
+      <button class="tab-btn" data-tab="images">
+        <span class="tab-icon">🖼️</span>
+        <span data-i18n="images">图片</span>
+      </button>
+      <button class="tab-btn" data-tab="documents">
+        <span class="tab-icon">📄</span>
+        <span data-i18n="documents">文档</span>
+      </button>
+      <button class="tab-btn" data-tab="camera">
+        <span class="tab-icon">📸</span>
+        <span data-i18n="cameraTranslation">拍摄翻译</span>
+      </button>
+      <button class="tab-btn" data-tab="interpreter">
+        <span class="tab-icon">🎙️</span>
+        <span data-i18n="interpreter">同传</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ==================== 主内容区 ==================== -->
+  <main class="translate-main">
+
+    <!-- ===== 语言选择栏 ===== -->
+    <div class="lang-bar">
+      <button class="lang-btn" id="sourceLangBtn" data-code="auto">检测语言</button>
+      <span class="detected-label" id="detectedLangLabel" style="display:none"></span>
+      <button class="swap-btn" id="swapLangBtn" data-i18n-title="swapLanguages">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z" fill="currentColor"/></svg>
+      </button>
+      <button class="lang-btn" id="targetLangBtn" data-code="zh-CN">中文（简体）</button>
+    </div>
+
+    <!-- ===== 面板：文字翻译 ===== -->
+    <div class="tab-panel active" id="panel-text">
+      <div class="translate-container">
+        <!-- 左侧：输入 -->
+        <div class="translate-box source-box">
+          <div class="box-toolbar">
+            <button class="tool-btn" id="listenSourceBtn" data-i18n-title="listenText">🔊</button>
+            <label class="learn-mode-toggle" title="开启学习模式：翻译单词/词组时显示音标、词性、例句等详细解释">
+              <input type="checkbox" id="learnModeToggle">
+              <span class="learn-mode-label">📚 学习</span>
+            </label>
+            <span class="char-count" id="charCount">0/5000</span>
+            <button class="tool-btn clear-btn" id="clearSourceBtn">✕</button>
+          </div>
+          <textarea id="sourceText" class="translate-textarea" data-i18n-placeholder="inputPlaceholder" placeholder="请输入文字" maxlength="5000" autofocus></textarea>
+        </div>
+
+        <!-- 右侧：输出 -->
+        <div class="translate-box target-box">
+          <div class="box-toolbar">
+            <button class="tool-btn" id="listenTargetBtn" data-i18n-title="listenText">🔊</button>
+            <button class="tool-btn" id="copyTargetBtn" data-i18n-title="copyText">📋</button>
+            <span class="engine-badge" id="engineBadge" style="display:none">Google</span>
+          </div>
+          <div id="targetText" class="translate-output" data-i18n="outputPlaceholder"></div>
+          <!-- 学习模式卡片 -->
+          <div id="learnCard" class="learn-card" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 面板：图片翻译 ===== -->
+    <div class="tab-panel" id="panel-images">
+      <div class="upload-zone" id="imageDropZone">
+        <div class="upload-icon">🖼️</div>
+        <p data-i18n="uploadImage">点击或拖拽上传图片</p>
+        <p class="upload-desc" data-i18n="uploadImageDesc">支持 JPG、PNG、GIF、WebP 格式</p>
+        <input type="file" id="imageFileInput" accept="image/*" hidden>
+      </div>
+      <div class="image-preview" id="imagePreview" style="display:none"></div>
+    </div>
+
+    <!-- ===== 面板：文档翻译 ===== -->
+    <div class="tab-panel" id="panel-documents">
+      <div class="upload-zone" id="docDropZone">
+        <div class="upload-icon">📄</div>
+        <p data-i18n="uploadDocument">点击或拖拽上传文档</p>
+        <p class="upload-desc" data-i18n="uploadDocumentDesc">支持 TXT、HTML 文件</p>
+        <input type="file" id="docFileInput" accept=".txt,.html,.htm" hidden>
+      </div>
+      <div class="doc-info-panel" id="docInfoPanel" style="display:none">
+        <div class="doc-info-header">
+          <span class="doc-name" id="docFileName"></span>
+          <button class="doc-close" id="docCloseBtn">✕</button>
+        </div>
+        <div class="doc-translation-container">
+          <!-- 左右对照的带蒙版排版双栏 -->
+          <div class="doc-column doc-source-col">
+            <div class="doc-col-title" data-i18n="documentOriginal">原文</div>
+            <div class="doc-content-view" id="docOriginalView"></div>
+          </div>
+          <div class="doc-column doc-target-col">
+            <div class="doc-col-title" data-i18n="documentTranslated">译文 (对照)</div>
+            <div class="doc-content-view" id="docTranslatedView"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 面板：拍摄翻译 ===== -->
+    <div class="tab-panel" id="panel-camera">
+      <div class="camera-panel-container">
+        <div class="camera-viewfinder-wrap">
+          <div class="camera-hints" data-i18n="cameraHints">💡 开启摄像头后，请对准需要翻译的文字并保持稳定。</div>
+          <button class="camera-control-btn btn-camera-stop-corner" id="stopCameraBtn" style="display:none">✕</button>
+          
+          <!-- 开启相机按钮移至取景框中心 -->
+          <button class="camera-control-btn btn-camera-start-center" id="startCameraBtn">🔌 开启相机</button>
+
+          <video id="cameraVideo" autoplay playsinline muted></video>
+          <canvas id="cameraCanvas" style="display:none"></canvas>
+          <div class="camera-result-overlay" id="cameraResultOverlay" style="display:none"></div>
+        </div>
+        <div class="camera-controls-bar">
+          <button class="camera-control-btn btn-camera-capture" id="captureCameraBtn" style="display:none">📸 拍摄并翻译</button>
+          <button class="camera-control-btn btn-camera-retake" id="retakeCameraBtn" style="display:none">🔄 继续翻译</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 面板：同声传译 ===== -->
+    <div class="tab-panel" id="panel-interpreter">
+      <div class="interpreter-container">
+        <div class="interp-toolbar">
+          <div class="interp-language-pair" aria-label="同传语言">
+            <label class="interp-lang-field">
+              <span>我的语言</span>
+              <select id="interpMyLang" class="interp-lang-select">
+                <option value="zh-CN" selected>中文</option>
+                <option value="en">English</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+                <option value="fr">Français</option>
+                <option value="de">Deutsch</option>
+                <option value="es">Español</option>
+                <option value="ru">Русский</option>
+              </select>
+            </label>
+            <button id="interpSwapLang" class="interp-icon-btn" type="button" title="交换语言" aria-label="交换语言">⇄</button>
+            <label class="interp-lang-field">
+              <span>对方语言</span>
+              <select id="interpTheirLang" class="interp-lang-select">
+                <option value="en" selected>English</option>
+                <option value="zh-CN">中文</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+                <option value="fr">Français</option>
+                <option value="de">Deutsch</option>
+                <option value="es">Español</option>
+                <option value="ru">Русский</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="interp-option-row">
+            <div class="interp-option-group">
+              <span class="interp-option-label">音频来源</span>
+              <div class="interp-segmented" role="group" aria-label="音频来源">
+                <button type="button" data-interp-source="microphone" aria-pressed="true">麦克风</button>
+                <button type="button" data-interp-source="system" aria-pressed="false">标签页音频</button>
+              </div>
+            </div>
+            <div class="interp-option-group">
+              <span class="interp-option-label">说话方</span>
+              <div class="interp-segmented" role="group" aria-label="说话方">
+                <button type="button" data-interp-direction="auto" aria-pressed="true">自动双向</button>
+                <button type="button" data-interp-direction="mine" aria-pressed="false">固定我方</button>
+                <button type="button" data-interp-direction="theirs" aria-pressed="false">固定对方</button>
+              </div>
+            </div>
+            <div class="interp-option-group">
+              <span class="interp-option-label">内容模式</span>
+              <div class="interp-segmented" role="group" aria-label="内容模式">
+                <button type="button" data-interp-content="conversation" aria-pressed="true">对话</button>
+                <button type="button" data-interp-content="music" aria-pressed="false">音频</button>
+              </div>
+            </div>
+            <div class="interp-option-group">
+              <span class="interp-option-label">&#35821;&#27668;</span>
+              <div id="interpToneControl" class="interp-segmented" role="group" aria-label="&#32763;&#35793;&#35821;&#27668;">
+                <button type="button" data-interp-tone="Standard" aria-pressed="true">&#26631;&#20934;</button>
+                <button type="button" data-interp-tone="Casual" aria-pressed="false">&#33258;&#28982;</button>
+                <button type="button" data-interp-tone="Formal" aria-pressed="false">&#27491;&#24335;</button>
+              </div>
+            </div>
+            <div class="interp-option-group">
+              <span class="interp-option-label">&#35821;&#38899;&#35782;&#21035;</span>
+              <div id="interpAsrControl" class="interp-segmented" role="group" aria-label="&#35821;&#38899;&#35782;&#21035;&#24341;&#25806;">
+                <button type="button" data-interp-asr="fusion" aria-pressed="true">&#34701;&#21512;</button>
+                <button type="button" data-interp-asr="whisper" aria-pressed="false">Whisper</button>
+                <button type="button" data-interp-asr="bing" aria-pressed="false">Bing</button>
+              </div>
+            </div>
+            <label class="interp-voice-control">
+              <span class="interp-option-label">&#26391;&#35835;&#22768;&#38899;</span>
+              <select id="interpVoiceSelect" class="interp-voice-select" aria-label="&#26391;&#35835;&#22768;&#38899;">
+                <option value="">&#33258;&#21160;&#36873;&#25321;&#65288;Bing Neural&#65289;</option>
+              </select>
+            </label>
+            <label class="interp-check-control">
+              <input id="interpCorrectionToggle" type="checkbox">
+              <span>AI 校正</span>
+            </label>
+            <label class="interp-check-control">
+              <input id="interpAutoplayToggle" type="checkbox" checked>
+              <span>自动播报</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 消息滚动列表区 -->
+        <div class="interp-messages-view" id="interpMessagesView">
+          <div class="interp-hint" id="interpHint">等待开始</div>
+        </div>
+
+        <div class="interp-live-controls">
+          <div class="interp-live-state" aria-live="polite">
+            <span class="interp-state-dot" aria-hidden="true"></span>
+            <span id="interpActivityText">就绪</span>
+            <span id="interpQueueStatus" class="interp-queue-status"></span>
+          </div>
+          <button class="interp-mic-btn" id="interpMicGlobal" type="button">
+            <span class="mic-icon-wrap" aria-hidden="true">🎙</span>
+            <span id="interpGlobalStatus" class="interp-global-status-text">开始实时翻译</span>
+          </button>
+          <div class="interp-level-meter" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ==================== 底部广告展示位 ==================== -->
+  <div class="ad-container" style="text-align: center; margin: 20px auto; max-width: 800px;">
+    <ins class="adsbygoogle"
+         style="display:block"
+         data-ad-client="ca-pub-4703532129300104"
+         data-ad-slot="auto"
+         data-ad-format="auto"
+         data-full-width-responsive="true"></ins>
+    <script>
+      // 广告初始化也放入延迟执行或直接交由主脚本捕获
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        }, 2100);
+      });
+    </script>
+  </div>
+
+  <!-- ==================== 底部 Tab 栏（移动端） ==================== -->
+  <nav class="bottom-tabs">
+    <button class="bottom-tab-btn active" data-tab="text">
+      <span class="btab-icon">📝</span>
+      <span class="btab-label" data-i18n="text">文字</span>
+    </button>
+    <button class="bottom-tab-btn" data-tab="images">
+      <span class="btab-icon">🖼️</span>
+      <span class="btab-label" data-i18n="images">图片</span>
+    </button>
+    <button class="bottom-tab-btn" data-tab="documents">
+      <span class="btab-icon">📄</span>
+      <span class="btab-label" data-i18n="documents">文档</span>
+    </button>
+    <button class="bottom-tab-btn" data-tab="camera">
+      <span class="btab-icon">📸</span>
+      <span class="btab-label" data-i18n="cameraTranslation">拍摄</span>
+    </button>
+    <button class="bottom-tab-btn" data-tab="interpreter">
+      <span class="btab-icon">🎙️</span>
+      <span class="btab-label" data-i18n="interpreter">同传</span>
+    </button>
+  </nav>
+
+  <!-- ==================== 设置面板（侧滑） ==================== -->
+  <aside class="settings-panel" id="settingsPanel">
+    <div class="settings-header">
+      <h2 data-i18n="settings">设置</h2>
+      <button class="settings-close" id="settingsClose">✕</button>
+    </div>
+    <div class="settings-body">
+      <div class="settings-group">
+        <label data-i18n="interfaceLanguage">界面语言</label>
+        <select id="uiLangSelect" class="settings-select">
+          <option value="zh-CN">简体中文</option>
+          <option value="zh-TW">繁體中文</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+        </select>
+      </div>
+      <div class="settings-group">
+        <label data-i18n="translationEngine">翻译引擎</label>
+        <select id="engineSelect" class="settings-select">
+            <option value="auto" data-i18n="engineAuto">自动（Google → Bing → AI）</option>
+            <option value="google" data-i18n="engineGoogle">仅 Google</option>
+            <option value="bing" data-i18n="engineBing">仅 Bing</option>
+            <option value="cloudflare" data-i18n="engineCF">仅 Cloudflare AI</option>
+        </select>
+      </div>
+      <div class="settings-group">
+        <label data-i18n="about">关于</label>
+        <p class="settings-desc" data-i18n="aboutDesc">基于 Cloudflare Workers 构建的翻译服务</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ==================== 历史面板（侧滑） ==================== -->
+  <aside class="history-panel" id="historyPanel">
+    <div class="history-header">
+      <div class="history-tabs">
+        <button class="history-tab-btn active" data-type="history" data-i18n="history">历史记录</button>
+        <button class="history-tab-btn" data-type="favorites" data-i18n="savedTranslations">已收藏</button>
+      </div>
+      <button class="history-close" id="historyClose">✕</button>
+    </div>
+    <div class="history-search-wrap">
+      <input type="text" id="historySearch" class="history-search" data-i18n-placeholder="searchHistory" placeholder="搜索历史记录...">
+    </div>
+    <div class="history-list"></div>
+    <div class="history-footer">
+      <button class="history-clear-btn" id="clearHistoryBtn" data-i18n="clearHistory">清空历史</button>
+    </div>
+  </aside>
+
+  <!-- ==================== Scripts ==================== -->
+  <script src="/js/i18n.js"></script>
+  <script src="/js/languages.js"></script>
+  <script src="/js/translator.js"></script>
+  <script src="/js/tts.js"></script>
+  <script src="/js/history.js"></script>
+  <script src="/js/ocr.js"></script>
+  <script src="/vendor/onnx/ort.wasm.min.js"></script>
+  <script src="/vendor/vad/bundle.min.js"></script>
+  <script src="/js/interpreter-echo.js"></script>
+  <script src="/js/interpreter.js"></script>
+  <script src="/js/camera.js"></script>
+  <script src="/js/tabs.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+node_modules/
+.wrangler/
+*.log
+*.tgz
+.bing-inspect/
+.bing-package-temp/
+.cloudflare-export/
+.edge-tts-inspect/
+.edge-zh.json
+.met-auth.txt
+.tmp-*
+translate-app/
+bing-live-interpreter/
+# The mini-program and competition package are maintained separately from the web app.
+/XCX/
+/参赛材料/
+/【2026*.pdf
+/tests/xcx-*.test.js

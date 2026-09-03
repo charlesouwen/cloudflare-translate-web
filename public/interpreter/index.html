@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f8fa" />
+    <meta name="description" content="专业双向同声传译工作台，支持 Bing 实时语音识别、智能断句、语气翻译、神经语音播报与译文同步高亮。" />
+    <title>专业同声传译 - 在线翻译</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css?v=16" />
+  </head>
+  <body>
+    <div id="ariaLive" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="返回在线翻译">
+        <span class="brand-mark" aria-hidden="true">译</span>
+        <span class="brand-copy">
+          <strong>在线翻译</strong>
+          <small>专业同声传译工作台</small>
+        </span>
+      </a>
+      <div class="header-status">
+        <span class="no-key-label">免付费 API Key</span>
+        <span id="engineState" class="engine-state">正在连接</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="session-console" aria-label="传译会话控制">
+        <div class="session-title">
+          <div>
+            <span class="eyebrow">实时会话</span>
+            <h1>双向同声传译</h1>
+          </div>
+          <div id="pipelineState" class="pipeline-state" data-stage="idle">
+            <span class="pipeline-dot" aria-hidden="true"></span>
+            <span>等待开始</span>
+          </div>
+        </div>
+
+        <div class="language-console">
+          <label class="language-field participant-a">
+            <span class="participant-label"><b>A</b><span id="sourceLangLabel">用户 A 语言</span></span>
+            <select id="sourceLang" aria-label="用户 A 语言"></select>
+          </label>
+
+          <div class="session-action">
+            <button id="swapLangs" class="icon-button swap-button" type="button" title="交换双方语言" aria-label="交换双方语言">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 7h12m0 0-3-3m3 3-3 3M17 17H5m0 0 3 3m-3-3 3-3" />
+              </svg>
+            </button>
+            <button id="listenButton" class="listen-button" type="button" aria-pressed="false">
+              <span class="listen-icon" aria-hidden="true">
+                <svg class="mic-start" viewBox="0 0 24 24">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" />
+                </svg>
+                <svg class="mic-stop hidden" viewBox="0 0 24 24">
+                  <rect x="7" y="7" width="10" height="10" rx="1" />
+                </svg>
+              </span>
+              <span id="listenButtonText">开始同声传译</span>
+            </button>
+          </div>
+
+          <label class="language-field participant-b">
+            <span class="participant-label"><b>B</b><span id="targetLangLabel">用户 B 语言</span></span>
+            <select id="targetLang" aria-label="用户 B 语言"></select>
+          </label>
+        </div>
+
+        <div class="signal-row">
+          <div class="signal-item">
+            <span id="micState">麦克风待命</span>
+            <span class="mic-meter" aria-hidden="true"><span id="micMeterFill"></span></span>
+          </div>
+          <ol class="pipeline-steps" aria-label="处理阶段">
+            <li data-pipeline-step="listen">监听</li>
+            <li data-pipeline-step="confirm">句末确认</li>
+            <li data-pipeline-step="translate">翻译</li>
+            <li data-pipeline-step="speak">播报</li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="live-stage" aria-label="实时识别和翻译">
+        <article class="live-pane source-pane">
+          <header class="pane-heading">
+            <div>
+              <span class="pane-kicker">实时原话</span>
+              <h2 id="sourcePanelLabel">等待任一方说话</h2>
+            </div>
+            <span id="charCount" class="char-count">0 / 5000</span>
+          </header>
+          <textarea
+            id="sourceText"
+            maxlength="5000"
+            spellcheck="false"
+            placeholder="讲话后，识别内容会从这里实时出现"
+            aria-label="实时识别原文"></textarea>
+          <div id="sourceTransliteration" class="transliteration hidden"></div>
+          <footer class="pane-actions">
+            <span id="liveSpeakerState" class="pane-state">尚未检测到语音</span>
+            <span class="action-spacer"></span>
+            <button id="clearText" class="icon-button hidden" type="button" title="清除当前内容" aria-label="清除当前内容">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13" /></svg>
+            </button>
+            <button id="speakSource" class="icon-button" type="button" title="朗读原文" aria-label="朗读原文">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9H5Zm12-1a6 6 0 0 1 0 8" /></svg>
+            </button>
+          </footer>
+        </article>
+
+        <article class="live-pane target-pane">
+          <header class="pane-heading">
+            <div>
+              <span class="pane-kicker">译文与播报</span>
+              <h2 id="targetPanelLabel">翻译结果</h2>
+            </div>
+            <span id="translationMeta" class="translation-meta"></span>
+          </header>
+          <div id="targetText" class="output-text" role="textbox" aria-readonly="true" tabindex="0" data-placeholder="完整句子确认后会在这里翻译"></div>
+          <div id="targetTransliteration" class="transliteration hidden"></div>
+          <footer class="pane-actions">
+            <span id="playbackState" class="pane-state">等待译文</span>
+            <label class="voice-field" title="播报声音">
+              <span class="sr-only">播报声音</span>
+              <select id="voiceSelect" aria-label="播报声音"></select>
+            </label>
+            <button id="speakTarget" class="icon-button" type="button" title="朗读译文" aria-label="朗读译文">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9H5Zm12-1a6 6 0 0 1 0 8" /></svg>
+            </button>
+            <button id="copyTarget" class="icon-button" type="button" title="复制译文" aria-label="复制译文">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2" /></svg>
+            </button>
+          </footer>
+        </article>
+      </section>
+
+      <div class="process-strip">
+        <div class="process-copy">
+          <span class="setting-label">当前处理</span>
+          <strong id="semanticState">等待完整语句</strong>
+        </div>
+        <div id="statusBar" class="status-bar hidden" role="status"></div>
+        <div id="errorBar" class="error-bar hidden" role="alert"></div>
+      </div>
+
+      <section class="settings-band" aria-label="传译设置">
+        <div class="setting-block">
+          <span class="setting-label">工作模式</span>
+          <div id="workMode" class="segmented mode-segmented" role="group" aria-label="工作模式">
+            <button type="button" data-mode="two-way" aria-pressed="true">双向对话</button>
+            <button type="button" data-mode="one-way" aria-pressed="false">单向翻译</button>
+          </div>
+        </div>
+
+        <div id="speakerControl" class="setting-block">
+          <span class="setting-label">语言判断</span>
+          <div id="speakerMode" class="segmented speaker-segmented" role="group" aria-label="识别方">
+            <button type="button" data-speaker="auto" aria-pressed="true">双语自动</button>
+            <button type="button" data-speaker="a" aria-pressed="false">用户 A</button>
+            <button type="button" data-speaker="b" aria-pressed="false">用户 B</button>
+          </div>
+        </div>
+
+        <div class="setting-block">
+          <span class="setting-label">翻译语气</span>
+          <div id="toneControl" class="segmented" role="group" aria-label="翻译语气">
+            <button type="button" data-tone="Standard" aria-pressed="true">标准</button>
+            <button type="button" data-tone="Casual" aria-pressed="false">自然</button>
+            <button type="button" data-tone="Formal" aria-pressed="false">正式</button>
+          </div>
+        </div>
+
+        <label class="setting-block select-setting">
+          <span class="setting-label">句末判断</span>
+          <select id="segmentDelay" aria-label="句末判断策略">
+            <option value="auto" selected>智能 · 约 1.8-4.8 秒</option>
+            <option value="1600">快速 · 1.6 秒</option>
+            <option value="2400">标准 · 2.4 秒</option>
+            <option value="3800">长句 · 3.8 秒</option>
+          </select>
+        </label>
+
+        <label class="switch-control">
+          <input id="autoSpeak" type="checkbox" checked />
+          <span class="switch-track" aria-hidden="true"><span></span></span>
+          <span>自动播报</span>
+        </label>
+      </section>
+
+      <section id="conversationSection" class="conversation-section">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">会话时间线</span>
+            <h2>已确认的双语内容</h2>
+          </div>
+          <div class="section-actions">
+            <span id="conversationCount" class="section-meta">0 条</span>
+            <button id="clearConversation" class="icon-button" type="button" title="清空对话记录" aria-label="清空对话记录">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" /></svg>
+            </button>
+          </div>
+        </div>
+        <div id="conversationLog" class="conversation-log" aria-live="polite"></div>
+        <div id="conversationEmpty" class="conversation-empty">
+          <span class="empty-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+          <strong>等待对话开始</strong>
+          <span>完整语句确认后会按时间顺序保存在这里</span>
+        </div>
+      </section>
+
+      <section id="dictionarySection" class="results-section hidden">
+        <div class="section-heading"><h2>其他翻译</h2></div>
+        <div id="dictionaryResults" class="dictionary-results"></div>
+      </section>
+
+      <section id="phraseSection" class="phrases-section hidden">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Bing 短语库</span>
+            <h2>广泛使用的短语</h2>
+          </div>
+          <span id="phraseEngine" class="section-meta"></span>
+        </div>
+        <div id="phraseTabs" class="phrase-tabs" role="tablist" aria-label="常用短语分类"></div>
+        <div id="phraseGrid" class="phrase-grid"></div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span>基于 Bing 网页语音、翻译与免密钥 TTS</span>
+      <a href="https://cn.bing.com/translator" rel="noreferrer">打开 Bing Translator</a>
+    </footer>
+
+    <script type="module" src="./app.js?v=16"></script>
+  </body>
+</html>
