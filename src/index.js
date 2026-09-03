@@ -589,8 +589,9 @@ Use ${targetName} for explanations and translations. Keep examples useful, natur
     if (!result.partial) writeLearningCache(cacheKey, result);
     return jsonResp(result);
   } catch (error) {
-    console.warn('[learn] structured learning guide unavailable:', sanitizeProviderError(error));
-    return jsonResp(fallback);
+    const degradedReason = sanitizeProviderError(error);
+    console.warn('[learn] structured learning guide unavailable:', degradedReason);
+    return jsonResp({ ...fallback, degradedReason });
   }
 }
 

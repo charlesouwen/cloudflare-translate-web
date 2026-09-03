@@ -99,7 +99,9 @@ const recoveryBody = {
 };
 const transientResponse = await worker.fetch(request(recoveryBody), recoveringEnv);
 assert.equal(transientResponse.status, 200);
-assert.equal((await transientResponse.json()).partial, true);
+const transient = await transientResponse.json();
+assert.equal(transient.partial, true);
+assert.equal(transient.degradedReason, 'temporary learning failure');
 
 const recoveredResponse = await worker.fetch(request(recoveryBody), recoveringEnv);
 assert.equal(recoveredResponse.status, 200);
