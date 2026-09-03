@@ -23,6 +23,11 @@ assert.strictEqual(
   'generic creator boilerplate must be classified before interim translation',
 );
 assert.strictEqual(
+  classifyCaptionArtifact('Please like, follow and share').isArtifact,
+  true,
+  'English creator boilerplate must be classified before interim translation',
+);
+assert.strictEqual(
   classifyCaptionArtifact('请点赞支持这个栏目，我们稍后继续讨论').strong,
   false,
   'a longer meaningful creator sentence must not be a fixed artifact',

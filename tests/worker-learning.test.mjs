@@ -55,4 +55,32 @@ assert.equal(fallbackResponse.status, 200);
 const fallback = await fallbackResponse.json();
 assert.equal(fallback.dict[0].terms[0], '再见');
 
+let recoveryCalls = 0;
+const recoveringEnv = {
+  ASSETS: {},
+  AI: {
+    run: async () => {
+      recoveryCalls += 1;
+      if (recoveryCalls === 1) throw new Error('temporary learning failure');
+      return { response: aiResponse };
+    },
+  },
+};
+const recoveryBody = {
+  text: 'recoverable',
+  from: 'en',
+  to: 'zh-CN',
+  translation: '可恢复的',
+};
+const transientResponse = await worker.fetch(request(recoveryBody), recoveringEnv);
+assert.equal(transientResponse.status, 200);
+assert.equal((await transientResponse.json()).partial, true);
+
+const recoveredResponse = await worker.fetch(request(recoveryBody), recoveringEnv);
+assert.equal(recoveredResponse.status, 200);
+const recovered = await recoveredResponse.json();
+assert.equal(recovered.engine, 'cloudflare-ai');
+assert.equal(recovered.partial, false);
+assert.equal(recoveryCalls, 2, 'a transient fallback must not stay cached after Workers AI recovers');
+
 process.stdout.write('worker learning tests passed\n');

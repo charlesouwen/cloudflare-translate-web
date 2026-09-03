@@ -236,7 +236,8 @@
     const chineseHits = ['点赞', '點讚', '关注', '關注', '订阅', '訂閱', '转发', '轉發', '打赏', '打賞', '感谢观看']
       .filter((phrase) => text.includes(phrase)).length;
     const creatorTemplate = chineseHits >= 3 ||
-      /(?:thanksforwatching|thankyouforwatching|likeandsubscribe|pleasesubscribe|dontforgettosubscribe)/.test(text);
+      /(?:thanksforwatching|thankyouforwatching|likeandsubscribe|pleasesubscribe|dontforgettosubscribe)/.test(text) ||
+      /^(?:please)?(?:rememberto|dontforgetto)?(?:like|subscribe|follow|share|comment|support)(?:(?:and)?(?:like|subscribe|follow|share|comment|support))+(?:thischannel|thechannel|us)?$/.test(text);
     return {
       isArtifact: creatorTemplate,
       strong: false,

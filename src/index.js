@@ -581,11 +581,10 @@ Use ${targetName} for explanations and translations. Keep examples useful, natur
     }), 5_000, 'Learning guide generation timed out');
     const parsed = parseLearningJson(response?.response);
     const result = normalizeLearningGuide(parsed, fallback);
-    writeLearningCache(cacheKey, result);
+    if (!result.partial) writeLearningCache(cacheKey, result);
     return jsonResp(result);
   } catch (error) {
     console.warn('[learn] structured learning guide unavailable:', sanitizeProviderError(error));
-    writeLearningCache(cacheKey, fallback);
     return jsonResp(fallback);
   }
 }
@@ -1464,7 +1463,7 @@ function isFixedCaptionHallucination(value) {
     '字幕由志愿者制作',
   ].some((phrase) => text.includes(phrase));
   return fixed || [
-    /(?:字幕|字慕)(?:志愿者|志願者|提供者|提供|制作|翻译|翻譯|校对)/,
+    /(?:\u5b57\u5e55|\u5b57\u6155)(?:(?:\u5fd7\u613f\u8005|\u5fd7\u9858\u8005|\u63d0\u4f9b\u8005)|\u7531[\p{L}\p{N}]{1,24}(?:\u63d0\u4f9b|\u5236\u4f5c|\u7ffb\u8bd1|\u7ffb\u8b6f|\u6821\u5bf9)|(?:\u5236\u4f5c|\u7ffb\u8bd1|\u7ffb\u8b6f|\u6821\u5bf9)(?:\u8005|\u7ec4|\u5718\u968a|\u56e2\u961f|\u793e\u533a))/u,
     /(?:subtitle|subtitles|caption|captions)(?:volunteer|providedby|createdby|translatedby|contributedby)/,
     /amaraorg/,
   ].some((pattern) => pattern.test(text));
@@ -1475,7 +1474,7 @@ function looksLikeCreatorBoilerplate(value) {
   const chineseHits = ['点赞', '订阅', '转发', '打赏', '感谢观看', '支持', '栏目']
     .filter((phrase) => text.includes(phrase)).length;
   const chineseTemplate = /^(?:(?:请|欢迎|记得|别忘了|不要忘记|感谢大家)?(?:大家|各位)?)?(?=.*(?:点赞|點讚))(?=.*(?:关注|關注|订阅|訂閱|转发|轉發|投币|投幣|打赏|打賞|支持))(?:[\p{Script=Han}a-z0-9]){4,60}$/u.test(text);
-  const englishTemplate = /^(?:please)?(?:rememberto|dontforgetto)?(?:like|subscribe|follow|share|comment|support){2,}(?:thischannel|thechannel|us)?$/i.test(text);
+  const englishTemplate = /^(?:please)?(?:rememberto|dontforgetto)?(?:like|subscribe|follow|share|comment|support)(?:(?:and)?(?:like|subscribe|follow|share|comment|support))+(?:thischannel|thechannel|us)?$/i.test(text);
   return chineseHits >= 3 || chineseTemplate || englishTemplate ||
     /(?:thanksforwatching|thankyouforwatching|likeandsubscribe|pleasesubscribe|dontforgettosubscribe)/.test(text);
 }
@@ -1553,7 +1552,8 @@ function assessWhisperTranscript(result, text, { isMusic, voicedMs, peakLevel, w
   }
   const hasProviderEvidence = Number.isFinite(durationAfterVad) || averageNoSpeech !== null ||
     averageLogProbability !== null || Number.isFinite(maximumCompression) || segments.length > 0;
-  const captionArtifact = isFixedCaptionHallucination(text) || looksLikeCreatorBoilerplate(text);
+  const fixedCaptionHallucination = isFixedCaptionHallucination(text);
+  const captionArtifact = fixedCaptionHallucination || looksLikeCreatorBoilerplate(text);
   if (captionArtifact && Number.isFinite(voicedMs) && voicedMs < 650 && normalized.length >= 4) {
     lowEvidence.push('short-client-caption');
   }
@@ -1567,8 +1567,10 @@ function assessWhisperTranscript(result, text, { isMusic, voicedMs, peakLevel, w
   let filteredReason = '';
   if (lowEvidence.includes('silent-pcm')) {
     filteredReason = 'no-audio-signal';
-  } else if (!isMusic && isFixedCaptionHallucination(text)) {
+  } else if (!isMusic && fixedCaptionHallucination) {
     filteredReason = 'fixed-caption-hallucination';
+  } else if (isMusic && captionArtifact && lowEvidence.length >= 2) {
+    filteredReason = `caption-boilerplate:${lowEvidence.join(',')}`;
   } else if (!isMusic && Number.isFinite(durationAfterVad) && durationAfterVad <= 0.12 && normalized.length >= 2) {
     filteredReason = 'no-voiced-audio';
   } else if (!isMusic && normalized.length >= 6 && lowEvidence.length >= 2) {
@@ -1591,7 +1593,9 @@ function assessWhisperTranscript(result, text, { isMusic, voicedMs, peakLevel, w
 function selectConversationTranscript(whisperText, liveText, whisperAssessment, context = {}) {
   const whisper = String(whisperText || '').trim();
   const candidate = String(liveText || '').trim();
-  const live = isFixedCaptionHallucination(candidate) ? '' : candidate;
+  const liveArtifact = isFixedCaptionHallucination(candidate) ||
+    (Boolean(whisperAssessment?.filteredReason) && looksLikeCreatorBoilerplate(candidate));
+  const live = liveArtifact ? '' : candidate;
   const expectedLanguage = context.forcedLang || context.alternateLanguage || '';
   const expectedBase = languageBase(expectedLanguage);
   const languageMismatch = expectedBase && transcriptScriptMismatch(transcriptScriptProfile(candidate), expectedBase);

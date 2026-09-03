@@ -148,6 +148,35 @@ assert.equal(legitimateCreatorSentence.payload.text, '请点赞支持这个栏�
   'creator-related words with strong speech evidence must not be treated as a generic hallucination');
 assert.equal(legitimateCreatorSentence.payload.whisper_filtered_reason, null);
 
+const legitimateSubtitleSentence = '\u5b57\u5e55\u7ffb\u8bd1\u529f\u80fd\u5df2\u7ecf\u5b8c\u6210';
+const retainedSubtitleSentence = await recognize(legitimateSubtitleSentence, legitimateSubtitleSentence, 'zh', {
+  whisper: {
+    transcription_info: { language: 'zh', duration_after_vad: 2.4 },
+    segments: [{ no_speech_prob: 0.01, avg_logprob: -0.08, compression_ratio: 1.05 }],
+  },
+});
+assert.equal(retainedSubtitleSentence.payload.text, legitimateSubtitleSentence,
+  'a normal sentence about subtitle translation must survive strong speech evidence');
+assert.equal(retainedSubtitleSentence.payload.whisper_filtered_reason, null);
+
+const lowEvidenceMusicBoilerplate = await recognize('please like follow and share', '', 'en', {
+  alternateTranscript: 'please like follow and share',
+  alternateLanguage: 'en',
+  audioMode: 'system',
+  contentMode: 'music',
+  whisper: {
+    word_count: 0,
+    transcription_info: { language: 'en', duration_after_vad: 0.08 },
+    segments: [{ no_speech_prob: 0.92, avg_logprob: -1.8, compression_ratio: 3.4 }],
+  },
+});
+assert.equal(lowEvidenceMusicBoilerplate.payload.text, '',
+  'music/system capture must reject low-evidence creator boilerplate');
+assert.equal(lowEvidenceMusicBoilerplate.payload.accepted, false);
+assert.match(lowEvidenceMusicBoilerplate.payload.whisper_filtered_reason, /^caption-boilerplate:/);
+assert(!lowEvidenceMusicBoilerplate.calls.includes('@cf/meta/llama-3-8b-instruct'),
+  'deterministic low-evidence boilerplate must not spend correction inference');
+
 const noSpeechSentinel = await recognize('呃呃呃呃', '[NO_SPEECH]', 'zh');
 assert.equal(noSpeechSentinel.payload.text, '', 'an explicit correction sentinel must suppress acoustic gibberish');
 assert.equal(noSpeechSentinel.payload.whisper_filtered_reason, 'post-correction-no-speech');
