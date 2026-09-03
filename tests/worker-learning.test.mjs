@@ -112,4 +112,65 @@ assert.equal(recovered.engine, 'cloudflare-ai');
 assert.equal(recovered.partial, false);
 assert.equal(recoveryCalls, 2, 'a transient fallback must not stay cached after Workers AI recovers');
 
+const edgeEntries = new Map();
+let cachedMethod = '';
+let cachedControl = '';
+globalThis.caches = {
+  default: {
+    match: async (cacheRequest) => edgeEntries.get(cacheRequest.url)?.clone(),
+    put: async (cacheRequest, cacheResponse) => {
+      cachedMethod = cacheRequest.method;
+      cachedControl = cacheResponse.headers.get('cache-control') || '';
+      edgeEntries.set(cacheRequest.url, cacheResponse.clone());
+    },
+  },
+};
+const pendingCacheWrites = [];
+const edgeBody = {
+  text: 'durable',
+  from: 'en',
+  to: 'zh-CN',
+  translation: '持久的',
+};
+const edgeFillResponse = await worker.fetch(request(edgeBody), {
+  ASSETS: {},
+  AI: { run: async () => ({ choices: [{ message: { content: aiResponse } }] }) },
+}, {
+  waitUntil: (promise) => pendingCacheWrites.push(promise),
+});
+assert.equal((await edgeFillResponse.json()).partial, false);
+await Promise.all(pendingCacheWrites);
+assert.equal(edgeEntries.size, 1);
+assert.equal(cachedMethod, 'GET');
+assert.equal(cachedControl, 'public, max-age=86400');
+assert(![...edgeEntries.keys()][0].includes('durable'), 'the edge cache key must not expose source text');
+
+const isolatedSource = `${source}\n/* fresh learning-cache isolate */`;
+const isolatedWorker = (await import(
+  `data:text/javascript;base64,${Buffer.from(isolatedSource).toString('base64')}`
+)).default;
+let isolatedAiCalls = 0;
+const edgeHitResponse = await isolatedWorker.fetch(request(edgeBody), {
+  ASSETS: {},
+  AI: { run: async () => {
+    isolatedAiCalls += 1;
+    throw new Error('edge cache miss');
+  } },
+});
+const edgeHit = await edgeHitResponse.json();
+assert.equal(edgeHit.partial, false);
+assert.equal(edgeHit.engine, 'cloudflare-ai');
+assert.equal(isolatedAiCalls, 0, 'a fresh isolate must reuse the complete edge-cached learning card');
+
+const entriesBeforeNoAiFallback = edgeEntries.size;
+await isolatedWorker.fetch(request({
+  text: 'uncached fallback',
+  from: 'en',
+  to: 'zh-CN',
+  translation: '不缓存的降级结果',
+}), { ASSETS: {} });
+assert.equal(edgeEntries.size, entriesBeforeNoAiFallback,
+  'a missing AI binding must not cache a partial learning card');
+delete globalThis.caches;
+
 process.stdout.write('worker learning tests passed\n');

@@ -42,6 +42,7 @@ const TRANSLATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const TRANSLATION_CACHE_MAX_ENTRIES = 256;
 const LEARNING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const LEARNING_CACHE_MAX_ENTRIES = 128;
+const LEARNING_CACHE_VERSION = 'learning-v2';
 const LEARNING_MODEL = '@cf/zai-org/glm-4.7-flash';
 const LEARNING_TIMEOUT_MS = 15_000;
 const LEARNING_RESPONSE_FORMAT = {
@@ -290,7 +291,7 @@ export default {
           return await handleTranslateCF(request, env);
 
         case url.pathname === '/api/learn' && request.method === 'POST':
-          return await handleLearn(request, env);
+          return await handleLearn(request, env, ctx);
 
         case url.pathname === '/api/detect' && request.method === 'POST':
           return await handleDetect(request, env);
@@ -576,7 +577,7 @@ async function handleTranslate(request, env) {
   }
 }
 
-async function handleLearn(request, env) {
+async function handleLearn(request, env, ctx) {
   const body = await request.json();
   const text = typeof body?.text === 'string' ? body.text.trim() : '';
   if (!text) return jsonResp({ error: 'text is required' }, 400);
@@ -590,13 +591,15 @@ async function handleLearn(request, env) {
     ? body.translation.trim().slice(0, 500)
     : '';
   const cacheKey = JSON.stringify([
-    SERVICE_VERSION,
+    LEARNING_CACHE_VERSION,
+    LEARNING_MODEL,
     normalizeTranslationText(text),
     sourceLanguage.toLowerCase(),
     targetLanguage.toLowerCase(),
     normalizeTranslationText(translation),
   ]);
-  const cached = readLearningCache(cacheKey);
+  const cacheOrigin = new URL(request.url).origin;
+  const cached = await readLearningCache(cacheKey, cacheOrigin);
   if (cached) return jsonResp(cached);
 
   const fallback = {
@@ -610,7 +613,6 @@ async function handleLearn(request, env) {
     partial: true,
   };
   if (!env?.AI || typeof env.AI.run !== 'function') {
-    writeLearningCache(cacheKey, fallback);
     return jsonResp(fallback);
   }
 
@@ -641,7 +643,7 @@ Use ${targetName} for explanations and translations. Keep examples useful, natur
     const generated = response?.response ?? response?.choices?.[0]?.message?.content;
     const parsed = parseLearningJson(generated);
     const result = normalizeLearningGuide(parsed, fallback);
-    if (!result.partial) writeLearningCache(cacheKey, result);
+    if (!result.partial) writeLearningCache(cacheKey, cacheOrigin, result, ctx);
     return jsonResp(result);
   } catch (error) {
     const degradedReason = sanitizeProviderError(error);
@@ -689,7 +691,7 @@ function normalizeLearningGuide(raw, fallback) {
   };
 }
 
-function readLearningCache(key) {
+function readLearningMemoryCache(key) {
   const cached = learningResultCache.get(key);
   if (!cached || cached.expiresAt <= Date.now()) {
     if (cached) learningResultCache.delete(key);
@@ -700,12 +702,70 @@ function readLearningCache(key) {
   return cached.value;
 }
 
-function writeLearningCache(key, value) {
+function writeLearningMemoryCache(key, value) {
   learningResultCache.delete(key);
   learningResultCache.set(key, { value, expiresAt: Date.now() + LEARNING_CACHE_TTL_MS });
   while (learningResultCache.size > LEARNING_CACHE_MAX_ENTRIES) {
     learningResultCache.delete(learningResultCache.keys().next().value);
   }
+}
+
+async function learningCacheRequest(key, origin) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+  const hash = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  return new Request(new URL(`/__internal_cache/learn/${hash}`, origin));
+}
+
+function learningEdgeCache() {
+  try {
+    return typeof caches === 'undefined' ? null : caches.default;
+  } catch {
+    return null;
+  }
+}
+
+function isCompleteLearningResult(value) {
+  return Boolean(value && value.partial === false && value.engine === 'cloudflare-ai' &&
+    typeof value.headword === 'string' && typeof value.phonetic === 'string' &&
+    Array.isArray(value.dict) && Array.isArray(value.definitions) &&
+    Array.isArray(value.examples) && Array.isArray(value.synonyms));
+}
+
+async function readLearningCache(key, origin) {
+  const memoryValue = readLearningMemoryCache(key);
+  if (memoryValue) return memoryValue;
+
+  const edgeCache = learningEdgeCache();
+  if (!edgeCache) return null;
+  try {
+    const response = await edgeCache.match(await learningCacheRequest(key, origin));
+    if (!response?.ok) return null;
+    const value = await response.json();
+    if (!isCompleteLearningResult(value)) return null;
+    writeLearningMemoryCache(key, value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function writeLearningCache(key, origin, value, ctx) {
+  writeLearningMemoryCache(key, value);
+  const edgeCache = learningEdgeCache();
+  if (!edgeCache) return;
+
+  const cacheWrite = learningCacheRequest(key, origin).then((request) => edgeCache.put(request, new Response(
+    JSON.stringify(value),
+    {
+      headers: {
+        'Content-Type': 'application/json; charset=UTF-8',
+        'Cache-Control': `public, max-age=${Math.floor(LEARNING_CACHE_TTL_MS / 1000)}`,
+      },
+    },
+  ))).catch(() => {});
+  if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(cacheWrite);
 }
 
 async function explicitProviderTranslate(env, provider, text, sourceLanguage, targetLanguage) {
